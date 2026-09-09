@@ -1,0 +1,467 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>🗄️ 数据中心</h1>
+    <div>
+        <button class="btn btn-primary" onclick="showAddSiteModal()">＋ 新增站点</button>
+        <button class="btn btn-success" onclick="showAddRackModal()">＋ 新增机柜</button>
+    </div>
+</div>
+
+<!-- Summary stats -->
+<div class="stats-grid" id="dcStatsGrid" style="grid-template-columns: repeat(4, 1fr);">
+    <div class="stat-card">
+        <div class="stat-icon blue">🏢</div>
+        <div><div class="stat-value" id="dc-site-count">-</div><div class="stat-label">站点数</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon indigo">🗄️</div>
+        <div><div class="stat-value" id="dc-rack-count">-</div><div class="stat-label">机柜总数</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon green">✅</div>
+        <div><div class="stat-value" id="dc-rack-active">-</div><div class="stat-label">在用机柜</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon orange">📋</div>
+        <div><div class="stat-value" id="dc-rack-reserved">-</div><div class="stat-label">预留 / 规划</div></div>
+    </div>
+</div>
+
+<!-- Sites -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">🏢 站点（公司 / 机房）</div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>站点名称</th>
+                        <th>公司 / 客户</th>
+                        <th>区域</th>
+                        <th>联系人</th>
+                        <th>机柜数</th>
+                        <th style="min-width: 140px;">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="siteBody">
+                    <tr><td colspan="6" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Racks -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        🗄️ 机柜
+        <span style="font-size: 13px; font-weight: normal;">
+            <select class="form-control" id="filterSite" onchange="loadRacks()" style="display:inline-block;width:auto;">
+                <option value="">全部站点</option>
+            </select>
+            <select class="form-control" id="filterStatus" onchange="loadRacks()" style="display:inline-block;width:auto;">
+                <option value="">全部状态</option>
+                <option value="在用">在用</option>
+                <option value="规划中">规划中</option>
+                <option value="预留">预留</option>
+                <option value="停用">停用</option>
+            </select>
+            <input type="text" class="form-control" id="filterSearch" placeholder="搜索编号/名称/角色/序列号..." oninput="loadRacks()" style="display:inline-block;width:auto;min-width:200px;">
+        </span>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>机柜编号</th>
+                        <th>所属站点</th>
+                        <th>名称</th>
+                        <th>角色</th>
+                        <th>类型</th>
+                        <th>U数</th>
+                        <th>状态</th>
+                        <th>序列号 / 资产编号</th>
+                        <th>具体位置</th>
+                        <th style="min-width: 130px;">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="rackBody">
+                    <tr><td colspan="10" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Visual rack view -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        🎛️ 机柜视图
+        <a href="#" onclick="loadRackView();return false;" style="font-size: 13px; text-decoration: none;">刷新 →</a>
+    </div>
+    <div class="card-body">
+        <div id="rackView">
+            <div class="empty-state">加载中...</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const DC_ROLES = ["服务器区", "网络区", "存储区", "布线区", "安全区", "其他"];
+const DC_TYPES = ["机柜", "开放式机架", "壁挂式"];
+const DC_WIDTHS = ["19英寸", "23英寸", "其他"];
+const DC_STATUSES = ["在用", "规划中", "预留", "停用"];
+
+let SITES = [];  // 缓存站点列表，用于下拉与展示
+
+function dcStatusBadge(s) {
+    const map = {
+        '在用':'<span class="badge badge-success">在用</span>',
+        '规划中':'<span class="badge badge-info">规划中</span>',
+        '预留':'<span class="badge badge-warning">预留</span>',
+        '停用':'<span class="badge badge-secondary">停用</span>',
+    };
+    return map[s] || `<span class="badge badge-secondary">${escapeHtml(s||'')}</span>`;
+}
+
+async function loadSites() {
+    try {
+        SITES = await API.get('/api/dc/sites');
+        const body = document.getElementById('siteBody');
+        if (SITES.length === 0) {
+            body.innerHTML = '<tr><td colspan="6" class="empty-state">🏢 暂无站点，点击右上角「新增站点」开始录入</td></tr>';
+        } else {
+            body.innerHTML = SITES.map(s => `
+                <tr>
+                    <td><strong>${escapeHtml(s.name)}</strong><br><span style="color:#888;font-size:12px;">${escapeHtml(s.region||'')}</span></td>
+                    <td>${escapeHtml(s.company||'-')}</td>
+                    <td>${escapeHtml(s.region||'-')}</td>
+                    <td>${escapeHtml(s.contact_name||'-')}<br><span style="color:#888;font-size:12px;">${escapeHtml(s.contact_phone||'')}</span></td>
+                    <td><b>${s.rack_count}</b> 台</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline" onclick="editSite(${s.id})">编辑</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteSite(${s.id})">删除</button>
+                    </td>
+                </tr>`).join('');
+        }
+        // 刷新站点下拉
+        const sel = document.getElementById('filterSite');
+        const cur = sel.value;
+        sel.innerHTML = '<option value="">全部站点</option>' + SITES.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+        sel.value = cur;
+    } catch (e) {
+        showToast('加载站点失败: ' + e.message, 'error');
+    }
+}
+
+async function loadRacks() {
+    try {
+        const params = new URLSearchParams();
+        const site = document.getElementById('filterSite').value;
+        const status = document.getElementById('filterStatus').value;
+        const search = document.getElementById('filterSearch').value.trim();
+        if (site) params.set('site_id', site);
+        if (status) params.set('status', status);
+        if (search) params.set('search', search);
+        const racks = await API.get('/api/dc/racks?' + params.toString());
+        const body = document.getElementById('rackBody');
+        if (racks.length === 0) {
+            body.innerHTML = '<tr><td colspan="10" class="empty-state">🗄️ 暂无机柜，点击右上角「新增机柜」录入</td></tr>';
+            return;
+        }
+        body.innerHTML = racks.map(r => `
+            <tr>
+                <td><strong>${escapeHtml(r.rack_number)}</strong></td>
+                <td>${escapeHtml(r.site_name||'-')}</td>
+                <td>${escapeHtml(r.name||'-')}</td>
+                <td>${escapeHtml(r.role||'-')}</td>
+                <td>${escapeHtml(r.type||'-')}</td>
+                <td>${r.u_height}U</td>
+                <td>${dcStatusBadge(r.status)}</td>
+                <td><code>${escapeHtml(r.serial||'-')}</code><br><span style="color:#888;font-size:12px;">${escapeHtml(r.asset_tag||'')}</span></td>
+                <td>${escapeHtml(r.location_detail||'-')}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline" onclick="editRack(${r.id})">编辑</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteRack(${r.id})">删除</button>
+                </td>
+            </tr>`).join('');
+    } catch (e) {
+        showToast('加载机柜失败: ' + e.message, 'error');
+    }
+}
+
+async function loadSummary() {
+    try {
+        const s = await API.get('/api/dc/summary');
+        document.getElementById('dc-site-count').textContent = s.sites_count;
+        document.getElementById('dc-rack-count').textContent = s.racks_count;
+        document.getElementById('dc-rack-active').textContent = (s.racks_by_status['在用']||0);
+        document.getElementById('dc-rack-reserved').textContent = (s.racks_by_status['预留']||0) + (s.racks_by_status['规划中']||0);
+    } catch (e) { console.error(e); }
+}
+
+async function loadRackView() {
+    const target = document.getElementById('rackView');
+    try {
+        const racks = await API.get('/api/dc/racks');
+        if (racks.length === 0) {
+            target.innerHTML = '<div class="empty-state">🗄️ 暂无机柜，点击右上角「新增机柜」录入</div>';
+            return;
+        }
+        // 叠加服务器/存储占用（按机柜分组）
+        let servers = [];
+        try { servers = await API.get('/api/assets/servers'); } catch (e) { servers = []; }
+        const byRack = {};
+        servers.forEach(s => { (byRack[s.rack_id] ||= []).push(s); });
+        // 按站点分组
+        const bySite = {};
+        racks.forEach(r => { (bySite[r.site_name||'未分配'] ||= []).push(r); });
+        let html = '';
+        for (const [site, list] of Object.entries(bySite)) {
+            html += `<div style="margin-bottom:22px;"><div style="font-weight:700;margin-bottom:10px;">🏢 ${escapeHtml(site)} <span style="color:#888;font-weight:normal;font-size:12px;">（${list.length} 台）</span></div><div style="display:flex;flex-wrap:wrap;gap:18px;">`;
+            list.forEach(r => {
+                html += rackUHTML(r, byRack[r.id] || []);
+            });
+            html += `</div></div>`;
+        }
+        target.innerHTML = html;
+    } catch (e) {
+        target.innerHTML = '<div class="empty-state">加载机柜视图失败</div>';
+    }
+}
+
+// 渲染单个机柜的 U 位视图（叠加服务器/存储占用）
+function rackUHTML(rack, servers) {
+    const u = Math.max(1, rack.u_height || 1);
+    const occ = new Array(u + 1).fill(null);
+    (servers || []).forEach(s => {
+        const lo = s.u_start || 1;
+        const hi = lo + (s.u_size || 1) - 1;
+        for (let i = lo; i <= hi && i <= u; i++) occ[i] = s;
+    });
+    const barH = Math.min(u * 7, 320);
+    const cellH = barH / u;
+    const catColor = { '服务器':'#3b82f6', '存储':'#8b5cf6' };
+    let cells = '', labels = '';
+    for (let i = u; i >= 1; i--) {
+        const s = occ[i];
+        if (s) {
+            const c = catColor[s.category] || '#3b82f6';
+            cells += `<div style="height:${cellH}px;background:linear-gradient(${c},${c}cc);border:1px solid ${c};border-radius:3px;margin:1px 0;color:#fff;font-size:10px;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:0 2px;" title="${escapeHtml(s.name)} (U${i})">${escapeHtml(s.name)}</div>`;
+        } else {
+            cells += `<div style="height:${cellH}px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:3px;margin:1px 0;"></div>`;
+        }
+        labels += `<div style="height:${cellH}px;font-size:9px;color:#94a3b8;display:flex;align-items:center;justify-content:flex-end;padding-right:3px;">U${i}</div>`;
+    }
+    return `
+    <div style="width:180px;border:1px solid #e6eaf0;border-radius:10px;padding:10px;text-align:center;background:#fff;">
+        <div style="font-weight:700;">${escapeHtml(rack.rack_number||'')}</div>
+        <div style="color:#888;font-size:12px;margin-bottom:6px;height:16px;overflow:hidden;">${escapeHtml(rack.name||'')}</div>
+        <div style="display:flex;justify-content:center;">
+            <div style="width:24px;">${labels}</div>
+            <div style="width:120px;">${cells}</div>
+        </div>
+        <div style="margin-top:6px;font-size:11px;color:#666;">${u}U · ${escapeHtml(rack.site_name||'')}</div>
+    </div>`;
+}
+
+// ---------- Site modal ----------
+function siteModalHTML(title, s) {
+    s = s || {};
+    return `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal"><div class="modal-header"><h3>${title}</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+            <div class="modal-body">
+                <div class="form-group"><label>站点名称 *</label><input type="text" class="form-control" id="site-name" value="${escapeHtml(s.name||'')}" placeholder="如 上海数据中心 A 栋"></div>
+                <div class="form-group"><label>公司 / 客户</label><input type="text" class="form-control" id="site-company" value="${escapeHtml(s.company||'')}" placeholder="如 某某公司"></div>
+                <div class="form-group"><label>区域 / 城市</label><input type="text" class="form-control" id="site-region" value="${escapeHtml(s.region||'')}" placeholder="如 华东 / 上海"></div>
+                <div class="form-group"><label>地址</label><input type="text" class="form-control" id="site-address" value="${escapeHtml(s.address||'')}"></div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>联系人</label><input type="text" class="form-control" id="site-contact" value="${escapeHtml(s.contact_name||'')}"></div>
+                    <div class="form-group" style="flex:1;"><label>联系电话</label><input type="text" class="form-control" id="site-phone" value="${escapeHtml(s.contact_phone||'')}"></div>
+                </div>
+                <div class="form-group"><label>备注</label><textarea class="form-control" id="site-desc" rows="2">${escapeHtml(s.description||'')}</textarea></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                <button class="btn btn-primary" onclick="${s.id ? 'submitEditSite('+s.id+')' : 'submitAddSite()'}">保存</button>
+            </div></div></div>`;
+}
+
+function showAddSiteModal() {
+    document.getElementById('modalContainer').innerHTML = siteModalHTML('新增站点', {});
+}
+
+async function submitAddSite() {
+    const data = {
+        name: document.getElementById('site-name').value.trim(),
+        company: document.getElementById('site-company').value.trim(),
+        region: document.getElementById('site-region').value.trim(),
+        address: document.getElementById('site-address').value.trim(),
+        contact_name: document.getElementById('site-contact').value.trim(),
+        contact_phone: document.getElementById('site-phone').value.trim(),
+        description: document.getElementById('site-desc').value.trim(),
+    };
+    if (!data.name) { showToast('请填写站点名称', 'warning'); return; }
+    try {
+        await API.post('/api/dc/sites', data);
+        showToast('已新增站点', 'success');
+        document.querySelector('.modal-overlay').remove();
+        loadSites(); loadSummary();
+    } catch (e) { showToast('新增失败: ' + e.message, 'error'); }
+}
+
+async function editSite(id) {
+    try {
+        const s = await API.get('/api/dc/sites/' + id);
+        document.getElementById('modalContainer').innerHTML = siteModalHTML('编辑站点', s);
+    } catch (e) { showToast('加载失败: ' + e.message, 'error'); }
+}
+
+async function submitEditSite(id) {
+    const data = {
+        name: document.getElementById('site-name').value.trim(),
+        company: document.getElementById('site-company').value.trim(),
+        region: document.getElementById('site-region').value.trim(),
+        address: document.getElementById('site-address').value.trim(),
+        contact_name: document.getElementById('site-contact').value.trim(),
+        contact_phone: document.getElementById('site-phone').value.trim(),
+        description: document.getElementById('site-desc').value.trim(),
+    };
+    try {
+        await API.put('/api/dc/sites/' + id, data);
+        showToast('已保存', 'success');
+        document.querySelector('.modal-overlay').remove();
+        loadSites(); loadSummary();
+    } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+}
+
+async function deleteSite(id) {
+    if (!confirm('确定删除该站点？其下所有机柜也会一并删除！')) return;
+    try {
+        await API.delete('/api/dc/sites/' + id);
+        showToast('已删除', 'success');
+        loadSites(); loadRacks(); loadSummary(); loadRackView();
+    } catch (e) { showToast('删除失败: ' + e.message, 'error'); }
+}
+
+// ---------- Rack modal ----------
+function rackModalHTML(title, r) {
+    r = r || {};
+    const siteOpts = SITES.map(s => `<option value="${s.id}" ${r.site_id===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('');
+    const roleOpts = DC_ROLES.map(x => `<option value="${x}" ${r.role===x?'selected':''}>${x}</option>`).join('');
+    const typeOpts = DC_TYPES.map(x => `<option value="${x}" ${(r.type||'机柜')===x?'selected':''}>${x}</option>`).join('');
+    const widthOpts = DC_WIDTHS.map(x => `<option value="${x}" ${(r.width||'19英寸')===x?'selected':''}>${x}</option>`).join('');
+    const statusOpts = DC_STATUSES.map(x => `<option value="${x}" ${(r.status||'在用')===x?'selected':''}>${x}</option>`).join('');
+    return `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.closest('.modal-overlay') && event.target===this && this.classList.remove('active')">
+            <div class="modal" style="max-width:640px;"><div class="modal-header"><h3>${title}</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+            <div class="modal-body">
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>所属站点 *</label><select class="form-control" id="rack-site">${siteOpts || '<option value="">（请先新增站点）</option>'}</select></div>
+                    <div class="form-group" style="flex:1;"><label>机柜编号 *</label><input type="text" class="form-control" id="rack-number" value="${escapeHtml(r.rack_number||'')}" placeholder="如 A01 / R-01"></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>机柜名称</label><input type="text" class="form-control" id="rack-name" value="${escapeHtml(r.name||'')}"></div>
+                    <div class="form-group" style="flex:1;"><label>角色 / 用途</label><select class="form-control" id="rack-role">${roleOpts}</select></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>类型</label><select class="form-control" id="rack-type">${typeOpts}</select></div>
+                    <div class="form-group" style="flex:1;"><label>宽度</label><select class="form-control" id="rack-width">${widthOpts}</select></div>
+                    <div class="form-group" style="flex:1;"><label>U 数</label><input type="number" class="form-control" id="rack-u" value="${r.u_height||42}" min="1" max="60"></div>
+                    <div class="form-group" style="flex:1;"><label>状态</label><select class="form-control" id="rack-status">${statusOpts}</select></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>序列号</label><input type="text" class="form-control" id="rack-serial" value="${escapeHtml(r.serial||'')}"></div>
+                    <div class="form-group" style="flex:1;"><label>资产编号</label><input type="text" class="form-control" id="rack-asset" value="${escapeHtml(r.asset_tag||'')}"></div>
+                </div>
+                <div class="form-group"><label>具体位置（机房 / 排 / 列）</label><input type="text" class="form-control" id="rack-loc" value="${escapeHtml(r.location_detail||'')}" placeholder="如 3F-机房A-第2排"></div>
+                <div class="form-group"><label>备注</label><textarea class="form-control" id="rack-desc" rows="2">${escapeHtml(r.description||'')}</textarea></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                <button class="btn btn-primary" onclick="${r.id ? 'submitEditRack('+r.id+')' : 'submitAddRack()'}">保存</button>
+            </div></div></div>`;
+}
+
+function showAddRackModal() {
+    if (SITES.length === 0) { showToast('请先新增一个站点', 'warning'); return; }
+    document.getElementById('modalContainer').innerHTML = rackModalHTML('新增机柜', {});
+}
+
+async function submitAddRack() {
+    const site = document.getElementById('rack-site').value;
+    if (!site) { showToast('请先选择所属站点', 'warning'); return; }
+    const data = {
+        site_id: parseInt(site, 10),
+        rack_number: document.getElementById('rack-number').value.trim(),
+        name: document.getElementById('rack-name').value.trim(),
+        role: document.getElementById('rack-role').value,
+        type: document.getElementById('rack-type').value,
+        width: document.getElementById('rack-width').value,
+        u_height: parseInt(document.getElementById('rack-u').value, 10) || 42,
+        status: document.getElementById('rack-status').value,
+        serial: document.getElementById('rack-serial').value.trim(),
+        asset_tag: document.getElementById('rack-asset').value.trim(),
+        location_detail: document.getElementById('rack-loc').value.trim(),
+        description: document.getElementById('rack-desc').value.trim(),
+    };
+    if (!data.rack_number) { showToast('请填写机柜编号', 'warning'); return; }
+    try {
+        await API.post('/api/dc/racks', data);
+        showToast('已新增机柜', 'success');
+        document.querySelector('.modal-overlay').remove();
+        loadRacks(); loadSummary(); loadRackView();
+    } catch (e) { showToast('新增失败: ' + e.message, 'error'); }
+}
+
+async function editRack(id) {
+    try {
+        const r = await API.get('/api/dc/racks/' + id);
+        document.getElementById('modalContainer').innerHTML = rackModalHTML('编辑机柜', r);
+    } catch (e) { showToast('加载失败: ' + e.message, 'error'); }
+}
+
+async function submitEditRack(id) {
+    const site = document.getElementById('rack-site').value;
+    const data = {
+        site_id: parseInt(site, 10),
+        rack_number: document.getElementById('rack-number').value.trim(),
+        name: document.getElementById('rack-name').value.trim(),
+        role: document.getElementById('rack-role').value,
+        type: document.getElementById('rack-type').value,
+        width: document.getElementById('rack-width').value,
+        u_height: parseInt(document.getElementById('rack-u').value, 10) || 42,
+        status: document.getElementById('rack-status').value,
+        serial: document.getElementById('rack-serial').value.trim(),
+        asset_tag: document.getElementById('rack-asset').value.trim(),
+        location_detail: document.getElementById('rack-loc').value.trim(),
+        description: document.getElementById('rack-desc').value.trim(),
+    };
+    try {
+        await API.put('/api/dc/racks/' + id, data);
+        showToast('已保存', 'success');
+        document.querySelector('.modal-overlay').remove();
+        loadRacks(); loadSummary(); loadRackView();
+    } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+}
+
+async function deleteRack(id) {
+    if (!confirm('确定删除该机柜？')) return;
+    try {
+        await API.delete('/api/dc/racks/' + id);
+        showToast('已删除', 'success');
+        loadRacks(); loadSummary(); loadRackView();
+    } catch (e) { showToast('删除失败: ' + e.message, 'error'); }
+}
+
+loadSites();
+loadRacks();
+loadSummary();
+loadRackView();
+</script>
+{% endblock %}

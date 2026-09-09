@@ -1,0 +1,330 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>配置备份管理</h1>
+    <div>
+        <button class="btn btn-primary" onclick="runAllBackups()">🔄 立即备份全部</button>
+    </div>
+</div>
+
+<!-- App-data backup (upgrade / iteration safety) -->
+{% if request.state.user.is_superuser %}
+<div class="card" style="border-left: 4px solid #2563eb;">
+    <div class="card-header">
+        🛡 应用数据备份（升级 / 迭代前防护）
+        <button class="btn btn-primary" style="float: right;" onclick="createDataBackup()">🛡 一键数据备份</button>
+    </div>
+    <div class="card-body">
+        <p style="margin: 0 0 12px; color: #555;">
+            在执行版本升级或迭代前，点击「一键数据备份」可将当前<strong>全部业务数据</strong>
+            （SQLite 数据库 + 命令配置等）快照保存到 <code>data/backups/data_backups/</code>。
+            若迭代出现问题，可停止服务后用该快照覆盖恢复，避免配置丢失。
+        </p>
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>备份时间</th>
+                        <th>当时版本</th>
+                        <th>文件数</th>
+                        <th>大小</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="dataBackupTable">
+                    <tr><td colspan="5" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <hr style="border:none;border-top:1px dashed #ccc;margin:16px 0;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <strong>🔄 一键上传备份并恢复</strong>
+            <input type="file" id="restoreFile" accept=".zip" style="max-width:280px;">
+            <input type="password" class="form-control" id="restorePassword" autocomplete="current-password"
+                   placeholder="当前管理员密码（二次确认）" style="max-width:240px;">
+            <button class="btn btn-warning" id="restoreBtn" onclick="restoreDataBackup()">📤 上传并恢复</button>
+            <span id="restoreStatus" style="font-size:13px;color:#555;"></span>
+        </div>
+        <p style="margin: 8px 0 0; font-size: 12px; color: #b45309;">
+            ⚠ 恢复会覆盖当前数据库与配置。系统会<strong>自动先创建一次「恢复前快照」</strong>作为回退点，
+            仍建议提前手动备份。请仅上传本工具导出的备份 zip（含 <code>netmgr.db</code> / <code>commands.json</code> / <code>manifest.json</code>）。
+        </p>
+        <p style="margin: 10px 0 0; font-size: 12px; color: #888;">
+            手动恢复方法（备用）：停止 CiscoNetworkManager 服务 → 用对应快照里的 <code>netmgr.db</code>（含 -wal/-shm）
+            与 <code>commands.json</code> 覆盖 <code>data/</code> 目录同名文件 → 重新启动服务。
+            跨主机迁移还必须安全复制原 <code>data/.secret_key</code>；系统会拒绝密钥指纹不匹配的新格式备份。
+        </p>
+    </div>
+</div>
+{% endif %}
+
+<!-- Task History -->
+<div class="card">
+    <div class="card-header">备份任务记录</div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>任务ID</th>
+                        <th>状态</th>
+                        <th>总设备数</th>
+                        <th>成功</th>
+                        <th>失败</th>
+                        <th>开始时间</th>
+                        <th>完成时间</th>
+                        <th>摘要</th>
+                    </tr>
+                </thead>
+                <tbody id="taskTable">
+                    <tr><td colspan="8" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Backup Records -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        备份记录
+        <select class="form-control" id="backupDeviceFilter" style="width: 200px;" onchange="loadBackups()">
+            <option value="">全部设备</option>
+        </select>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>设备</th>
+                        <th>备份时间</th>
+                        <th>状态</th>
+                        <th>大小</th>
+                        <th>变更摘要</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="backupTable">
+                    <tr><td colspan="6" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Config Viewer Modal -->
+<div class="modal-overlay" id="configModal" onclick="if(event.target===this)this.classList.remove('active')">
+    <div class="modal" style="width: 800px;">
+        <div class="modal-header">
+            <h3 id="configModalTitle">配置内容</h3>
+            <button class="btn btn-sm btn-outline" onclick="document.getElementById('configModal').classList.remove('active')">✕</button>
+        </div>
+        <div class="modal-body">
+            <pre class="config-viewer" id="configContent">加载中...</pre>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadTasks() {
+    try {
+        const tasks = await API.get('/api/schedule/tasks?limit=20');
+        const body = document.getElementById('taskTable');
+        const backupTasks = tasks.filter(t => t.task_type === 'backup');
+        if (backupTasks.length > 0) {
+            body.innerHTML = backupTasks.map(t => `
+                <tr>
+                    <td>#${t.id}</td>
+                    <td>${statusBadge(t.status)}</td>
+                    <td>${t.total_devices}</td>
+                    <td>${t.success_count}</td>
+                    <td>${t.failed_count}</td>
+                    <td>${formatDateTime(t.started_at)}</td>
+                    <td>${formatDateTime(t.completed_at)}</td>
+                    <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(t.summary || '-')}</td>
+                </tr>
+            `).join('');
+        } else {
+            body.innerHTML = '<tr><td colspan="8" class="empty-state">暂无备份任务记录</td></tr>';
+        }
+    } catch (e) {
+        showToast('加载任务记录失败: ' + e.message, 'error');
+    }
+}
+
+async function loadBackups() {
+    const deviceId = document.getElementById('backupDeviceFilter').value;
+    let url = '/api/backups?limit=100';
+    if (deviceId) url += `&device_id=${deviceId}`;
+
+    try {
+        const backups = await API.get(url);
+        const body = document.getElementById('backupTable');
+        if (backups && backups.length > 0) {
+            // Load device names if not filtering
+            let devices = {};
+            if (!deviceId) {
+                const allDevices = await API.get('/api/devices');
+                allDevices.forEach(d => { devices[d.id] = d.name; });
+            }
+
+            body.innerHTML = backups.map(b => `
+                <tr>
+                    <td>${escapeHtml(deviceId ? `设备 #${b.device_id}` : (devices[b.device_id] || `设备 #${b.device_id}`))}</td>
+                    <td>${formatDateTime(b.backup_time)}</td>
+                    <td>${b.is_changed ? '<span class="badge badge-warning">已变更</span>' : '<span class="badge badge-success">无变更</span>'}</td>
+                    <td>${(b.backup_size / 1024).toFixed(1)} KB</td>
+                    <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeAttr(b.change_summary || '')}">${escapeHtml(b.change_summary || '-')}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline" onclick="viewConfig(${b.id})">查看</button>
+                        <a class="btn btn-sm btn-outline" href="/api/backups/${b.id}/download" style="text-decoration: none;">下载</a>
+                    </td>
+                </tr>
+            `).join('');
+        } else {
+            body.innerHTML = '<tr><td colspan="6" class="empty-state">暂无备份记录</td></tr>';
+        }
+    } catch (e) {
+        showToast('加载备份记录失败: ' + e.message, 'error');
+    }
+}
+
+async function loadDeviceFilter() {
+    try {
+        const devices = await API.get('/api/devices');
+        const select = document.getElementById('backupDeviceFilter');
+        devices.forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d.id;
+            opt.textContent = `${d.name} (${d.ip_address})`;
+            select.appendChild(opt);
+        });
+    } catch (e) { console.error(e); }
+}
+
+async function viewConfig(backupId) {
+    document.getElementById('configModal').classList.add('active');
+    document.getElementById('configContent').textContent = '加载中...';
+    try {
+        const backup = await API.get(`/api/backups/${backupId}`);
+        document.getElementById('configModalTitle').textContent = `配置内容 - ${backup.device_name}`;
+        document.getElementById('configContent').textContent = backup.config_text;
+    } catch (e) {
+        document.getElementById('configContent').textContent = '加载失败: ' + e.message;
+    }
+}
+
+async function runAllBackups() {
+    if (!confirm('确定要立即备份所有设备配置吗？')) return;
+    showLoading();
+    try {
+        const result = await API.post('/api/backups/run-all');
+        showToast(`备份完成: 成功 ${result.success_count}, 失败 ${result.failed_count}`, result.failed_count > 0 ? 'warning' : 'success');
+        loadTasks();
+        loadBackups();
+    } catch (e) {
+        showToast('备份失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+loadDeviceFilter();
+loadTasks();
+loadBackups();
+if (document.getElementById('dataBackupTable')) loadDataBackups();
+
+async function createDataBackup() {
+    if (!confirm('确定要立即备份全部应用数据（数据库 + 配置）吗？\n建议在升级 / 迭代前执行。')) return;
+    showLoading();
+    try {
+        const result = await API.post('/api/backups/data');
+        if (result.ok) {
+            showToast(`数据备份完成：版本 ${result.app_version}，共 ${result.files.length} 个文件`, 'success');
+        } else {
+            showToast('备份失败: ' + (result.error || '未知错误'), 'error');
+        }
+        loadDataBackups();
+    } catch (e) {
+        showToast('备份失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+async function restoreDataBackup() {
+    const fileInput = document.getElementById('restoreFile');
+    const status = document.getElementById('restoreStatus');
+    const btn = document.getElementById('restoreBtn');
+    const file = fileInput.files && fileInput.files[0];
+    const currentPassword = document.getElementById('restorePassword').value;
+    if (!file) {
+        showToast('请先选择要恢复的备份 zip 文件', 'error');
+        return;
+    }
+    if (!currentPassword) {
+        showToast('请输入当前管理员密码进行二次确认', 'warning');
+        return;
+    }
+    if (!confirm('确定要上传并恢复该备份吗？\n当前数据将被覆盖（系统会自动先创建一次恢复前快照作为回退点）。')) return;
+
+    btn.disabled = true;
+    status.textContent = '正在上传并恢复...';
+    status.style.color = '#555';
+    try {
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('current_password', currentPassword);
+        const resp = await fetch('/api/backups/data/restore', {
+            method: 'POST',
+            body: fd,
+        });
+        const result = await resp.json().catch(() => ({}));
+        if (resp.ok && result.ok) {
+            status.textContent = `恢复成功（恢复前快照：${result.pre_restore_backup || '-'}）`;
+            status.style.color = '#16a34a';
+            showToast('恢复成功，请立即重启服务', 'success');
+            document.getElementById('restorePassword').value = '';
+        } else {
+            const msg = result.error || result.detail || ('HTTP ' + resp.status);
+            status.textContent = '恢复失败：' + msg;
+            status.style.color = '#dc2626';
+            showToast('恢复失败：' + msg, 'error');
+        }
+    } catch (e) {
+        status.textContent = '恢复失败：' + e.message;
+        status.style.color = '#dc2626';
+        showToast('恢复失败：' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function loadDataBackups() {
+    const body = document.getElementById('dataBackupTable');
+    try {
+        const backups = await API.get('/api/backups/data?limit=50');
+        if (backups && backups.length > 0) {
+            body.innerHTML = backups.map(b => `
+                <tr>
+                    <td>${escapeHtml(b.created_at || b.name)}</td>
+                    <td>v${escapeHtml(b.app_version || '-')}</td>
+                    <td>${b.files.length}</td>
+                    <td>${(b.size / 1024).toFixed(1)} KB</td>
+                    <td>
+                        <a class="btn btn-sm btn-outline" href="/api/backups/data/${b.name}/download" style="text-decoration: none;">下载</a>
+                    </td>
+                </tr>
+            `).join('');
+        } else {
+            body.innerHTML = '<tr><td colspan="5" class="empty-state">暂无数据备份，升级前请先点击「一键数据备份」</td></tr>';
+        }
+    } catch (e) {
+        body.innerHTML = '<tr><td colspan="5" class="empty-state">加载失败: ' + escapeHtml(e.message) + '</td></tr>';
+    }
+}
+</script>
+{% endblock %}

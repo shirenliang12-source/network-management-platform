@@ -1,0 +1,276 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>定时任务</h1>
+    <div>
+        <button class="btn btn-primary" onclick="openCreateModal()">+ 新建定时任务</button>
+    </div>
+</div>
+
+<!-- Status summary -->
+<div class="stats-grid" style="grid-template-columns: repeat(4, 1fr);" id="schedStats">
+    <div class="stat-card">
+        <div class="stat-icon blue">⏰</div>
+        <div><div class="stat-value" id="stat-total">-</div><div class="stat-label">任务总数</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon green">✅</div>
+        <div><div class="stat-value" id="stat-enabled">-</div><div class="stat-label">已启用</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon orange">🔄</div>
+        <div><div class="stat-value" id="stat-running">-</div><div class="stat-label">运行中</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon purple">📋</div>
+        <div><div class="stat-value" id="stat-types">-</div><div class="stat-label">任务类型</div></div>
+    </div>
+</div>
+
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        任务列表
+        <span style="font-size:13px; font-weight:normal; color:#888;">每 15 秒自动刷新状态</span>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>名称 / 说明</th>
+                        <th>任务类型</th>
+                        <th>Cron 表达式</th>
+                        <th>下次运行</th>
+                        <th>上次运行</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="schedBody">
+                    <tr><td colspan="7" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TASK_TYPE_LABELS = {
+    'backup': '配置备份',
+    'discovery': '邻居发现',
+    'info': '数据采集',
+    'zabbix_sync': 'Zabbix 资产同步',
+    'vcenter_sync': 'vCenter 资产同步',
+};
+const CRON_PRESETS = {
+    '0 2 * * *': '每天 02:00',
+    '0 3 * * *': '每天 03:00',
+    '0 4 * * 1': '每周一 04:00',
+    '*/30 * * * *': '每 30 分钟',
+    '0 */1 * * *': '每小时',
+    '0 0 * * 0': '每周日 00:00',
+};
+
+function taskTypeLabel(t) { return TASK_TYPE_LABELS[t] || String(t || ''); }
+function cronHint(cron) { return CRON_PRESETS[cron] || '自定义'; }
+
+async function loadSchedules() {
+    try {
+        const data = await API.get('/api/schedule');
+        renderSchedules(data);
+    } catch (e) {
+        showToast('加载定时任务失败: ' + e.message, 'error');
+    }
+}
+
+function renderSchedules(list) {
+    const body = document.getElementById('schedBody');
+    // Stats
+    const running = list.filter(s => s.is_running).length;
+    const enabled = list.filter(s => s.is_enabled).length;
+    const types = new Set(list.map(s => s.task_type)).size;
+    document.getElementById('stat-total').textContent = list.length;
+    document.getElementById('stat-enabled').textContent = enabled;
+    document.getElementById('stat-running').textContent = running;
+    document.getElementById('stat-types').textContent = types;
+
+    if (!list.length) {
+        body.innerHTML = '<tr><td colspan="7" class="empty-state">暂无定时任务，点击右上角「新建定时任务」添加</td></tr>';
+        return;
+    }
+
+    body.innerHTML = list.map(s => `
+        <tr>
+            <td>
+                <strong>${escapeHtml(s.description || taskTypeLabel(s.task_type))}</strong>
+                <div style="color:#888; font-size:12px;">#${s.id}</div>
+            </td>
+            <td><span class="badge badge-primary">${escapeHtml(taskTypeLabel(s.task_type))}</span></td>
+            <td>
+                <code>${escapeHtml(s.cron_expression)}</code>
+                <div style="color:#888; font-size:12px;">${escapeHtml(cronHint(s.cron_expression))}</div>
+            </td>
+            <td>${s.next_run ? formatRelative(s.next_run) : (s.is_enabled ? '—' : '已停用')}</td>
+            <td>${s.last_run ? formatRelative(s.last_run) : '从未'}</td>
+            <td>
+                ${s.is_running
+                    ? '<span class="badge badge-info">● 运行中</span>'
+                    : (s.is_enabled
+                        ? (s.last_status ? statusBadge(s.last_status) : '<span class="badge badge-success">就绪</span>')
+                        : '<span class="badge badge-secondary">已停用</span>')}
+            </td>
+            <td style="white-space: nowrap;">
+                <button class="btn btn-sm btn-outline" onclick="openEditModal(${s.id})">编辑</button>
+                <button class="btn btn-sm btn-primary" onclick="runNow(${s.id})">立即执行</button>
+                <button class="btn btn-sm ${s.is_enabled ? 'btn-outline' : 'btn-success'}" onclick="toggleSched(${s.id}, ${s.is_enabled})">${s.is_enabled ? '停用' : '启用'}</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteSched(${s.id})">删除</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function scheduleFormHtml(prefix, s) {
+    s = s || {};
+    const t = s.task_type || 'backup';
+    const cron = s.cron_expression || '0 2 * * *';
+    const desc = s.description || '';
+    const enabled = s.is_enabled !== undefined ? s.is_enabled : true;
+    const presets = Object.entries(CRON_PRESETS).map(([c, label]) =>
+        `<button type="button" class="btn btn-sm btn-outline" onclick="document.getElementById('${prefix}-cron').value='${c}'">${label}</button>`
+    ).join(' ');
+    return `
+        <div class="form-group">
+            <label>任务类型</label>
+            <select class="form-control" id="${prefix}-task-type">
+                <option value="backup" ${t==='backup'?'selected':''}>配置备份</option>
+                <option value="discovery" ${t==='discovery'?'selected':''}>邻居发现</option>
+                <option value="info" ${t==='info'?'selected':''}>数据采集</option>
+                <option value="zabbix_sync" ${t==='zabbix_sync'?'selected':''}>Zabbix 资产同步</option>
+                <option value="vcenter_sync" ${t==='vcenter_sync'?'selected':''}>vCenter 资产同步</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Cron 表达式（分 时 日 月 星期）</label>
+            <input type="text" class="form-control" id="${prefix}-cron" value="${escapeAttr(cron)}">
+            <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">${presets}</div>
+            <small style="color:#888;">示例：0 2 * * * 每天 02:00；0 3 * * 1 每周一 03:00；*/30 * * * * 每 30 分钟</small>
+        </div>
+        <div class="form-group">
+            <label>说明</label>
+            <input type="text" class="form-control" id="${prefix}-desc" value="${escapeAttr(desc)}">
+        </div>
+        <div class="form-group">
+            <label><input type="checkbox" id="${prefix}-enabled" ${enabled?'checked':''}> 启用此任务</label>
+        </div>`;
+}
+
+function openCreateModal() {
+    const modal = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal">
+                <div class="modal-header"><h3>新建定时任务</h3>
+                    <button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+                <div class="modal-body">${scheduleFormHtml('new', null)}</div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                    <button class="btn btn-primary" onclick="submitCreate()">创建</button>
+                </div>
+            </div>
+        </div>`;
+    document.getElementById('modalContainer').innerHTML = modal;
+}
+
+async function submitCreate() {
+    const payload = {
+        task_type: document.getElementById('new-task-type').value,
+        cron_expression: document.getElementById('new-cron').value.trim(),
+        description: document.getElementById('new-desc').value.trim(),
+        is_enabled: document.getElementById('new-enabled').checked,
+    };
+    if (payload.cron_expression.split(/\s+/).length !== 5) {
+        showToast('Cron 表达式需为 5 段（分 时 日 月 星期）', 'error');
+        return;
+    }
+    try {
+        await API.post('/api/schedule', payload);
+        showToast('已创建定时任务', 'success');
+        document.querySelector('.modal-overlay')?.remove();
+        loadSchedules();
+    } catch (e) { showToast('创建失败: ' + e.message, 'error'); }
+}
+
+async function openEditModal(id) {
+    let s;
+    try {
+        const list = await API.get('/api/schedule');
+        s = list.find(x => x.id === id);
+    } catch (e) { showToast('加载失败: ' + e.message, 'error'); return; }
+    if (!s) return;
+    const modal = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal">
+                <div class="modal-header"><h3>编辑定时任务 #${id}</h3>
+                    <button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+                <div class="modal-body">${scheduleFormHtml('edit', s)}</div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                    <button class="btn btn-primary" onclick="submitEdit(${id})">保存</button>
+                </div>
+            </div>
+        </div>`;
+    document.getElementById('modalContainer').innerHTML = modal;
+}
+
+async function submitEdit(id) {
+    const payload = {
+        task_type: document.getElementById('edit-task-type').value,
+        cron_expression: document.getElementById('edit-cron').value.trim(),
+        description: document.getElementById('edit-desc').value.trim(),
+        is_enabled: document.getElementById('edit-enabled').checked,
+    };
+    if (payload.cron_expression.split(/\s+/).length !== 5) {
+        showToast('Cron 表达式需为 5 段（分 时 日 月 星期）', 'error');
+        return;
+    }
+    try {
+        await API.put(`/api/schedule/${id}`, payload);
+        showToast('已更新定时任务', 'success');
+        document.querySelector('.modal-overlay')?.remove();
+        loadSchedules();
+    } catch (e) { showToast('更新失败: ' + e.message, 'error'); }
+}
+
+async function toggleSched(id, isEnabled) {
+    try {
+        await API.post(`/api/schedule/${id}/toggle`);
+        showToast('已' + (isEnabled ? '停用' : '启用') + '任务', 'success');
+        loadSchedules();
+    } catch (e) { showToast('操作失败: ' + e.message, 'error'); }
+}
+
+async function runNow(id) {
+    if (!confirm('立即执行一次该任务？将对其覆盖的所有已启用设备运行。')) return;
+    showLoading();
+    try {
+        const r = await API.post(`/api/schedule/${id}/run`);
+        showToast('已触发 ' + (r.task_type || 'task') + ' 任务，请稍后刷新查看状态', 'success');
+        setTimeout(loadSchedules, 1500);
+    } catch (e) { showToast('触发失败: ' + e.message, 'error'); }
+    finally { hideLoading(); }
+}
+
+async function deleteSched(id) {
+    if (!confirm('确定删除该定时任务吗？此操作不可恢复。')) return;
+    try {
+        await API.delete(`/api/schedule/${id}`);
+        showToast('已删除定时任务', 'success');
+        loadSchedules();
+    } catch (e) { showToast('删除失败: ' + e.message, 'error'); }
+}
+
+loadSchedules();
+setInterval(loadSchedules, 15000);
+</script>
+{% endblock %}

@@ -1,0 +1,423 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>设备详情</h1>
+    <div>
+        <button class="btn btn-outline" onclick="history.back()">← 返回</button>
+        <button class="btn btn-success" onclick="backupDevice()">💾 备份配置</button>
+        <button class="btn btn-primary" onclick="discoverDevice()">🔍 发现邻居</button>
+        <button class="btn btn-warning" onclick="collectInfo()">📋 采集信息</button>
+    </div>
+</div>
+
+<input type="hidden" id="deviceId" value="{{ device_id }}">
+
+<!-- Device Info Cards -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-icon blue">📡</div>
+        <div>
+            <div class="stat-value" id="info-hostname" style="font-size: 18px;">-</div>
+            <div class="stat-label">主机名</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon green">🔧</div>
+        <div>
+            <div class="stat-value" id="info-model" style="font-size: 18px;">-</div>
+            <div class="stat-label">型号</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon orange">📌</div>
+        <div>
+            <div class="stat-value" id="info-serial" style="font-size: 18px;">-</div>
+            <div class="stat-label">序列号</div>
+        </div>
+    </div>
+    <div class="stat-card" onclick="editProductionDate()" style="cursor:pointer;" title="点击手动设置生产日期">
+        <div class="stat-icon purple">📅</div>
+        <div>
+            <div class="stat-value" id="info-proddate" style="font-size: 18px;">-</div>
+            <div class="stat-label">生产日期 <span id="info-proddate-src" style="font-size:11px;color:#888;"></span></div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon orange">📊</div>
+        <div>
+            <div class="stat-value" id="info-cpu" style="font-size: 18px;">-</div>
+            <div class="stat-label">CPU利用率</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon teal">💾</div>
+        <div>
+            <div class="stat-value" id="info-memory" style="font-size: 18px;">-</div>
+            <div class="stat-label">内存使用</div>
+        </div>
+    </div>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+    <!-- Device Details -->
+    <div class="card">
+        <div class="card-header">设备信息</div>
+        <div class="card-body">
+            <table class="data-table">
+                <tbody id="deviceInfoTable">
+                    <tr><td colspan="2" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Neighbors -->
+    <div class="card">
+        <div class="card-header">邻居设备</div>
+        <div class="card-body">
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>邻居名称</th>
+                            <th>IP地址</th>
+                            <th>本地接口</th>
+                            <th>邻居接口</th>
+                            <th>协议</th>
+                        </tr>
+                    </thead>
+                    <tbody id="neighborsTable">
+                        <tr><td colspan="5" class="empty-state">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Backup History -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">配置备份历史</div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>备份时间</th>
+                        <th>状态</th>
+                        <th>大小</th>
+                        <th>变更摘要</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="backupHistoryTable">
+                    <tr><td colspan="5" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Interface Status -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">接口状态 (UP / DOWN)</div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>接口名称</th>
+                        <th>IP地址</th>
+                        <th>管理状态</th>
+                        <th>协议状态</th>
+                    </tr>
+                </thead>
+                <tbody id="interfaceTable">
+                    <tr><td colspan="4" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Config Viewer Modal -->
+<div class="modal-overlay" id="configModal" onclick="if(event.target===this)this.classList.remove('active')">
+    <div class="modal" style="width: 800px;">
+        <div class="modal-header">
+            <h3>配置内容</h3>
+            <button class="btn btn-sm btn-outline" onclick="document.getElementById('configModal').classList.remove('active')">✕</button>
+        </div>
+        <div class="modal-body">
+            <pre class="config-viewer" id="configContent">加载中...</pre>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const deviceId = document.getElementById('deviceId').value;
+
+function renderDeviceDetailIps(d) {
+    const extras = (d.additional_ips || []).map(x => x.ip_address);
+    if (!extras.length) return `<code>${escapeHtml(d.ip_address)}</code>`;
+    return `<code>${escapeHtml(d.ip_address)}</code> <span class="badge badge-secondary">主管理 IP</span><br>` +
+           extras.map(ip => `<code>${escapeHtml(ip)}</code>`).join(' ');
+}
+
+async function loadDeviceInfo() {
+    try {
+        const d = await API.get(`/api/devices/${deviceId}`);
+        document.getElementById('info-hostname').textContent = d.name;
+
+        const infoTable = document.getElementById('deviceInfoTable');
+        infoTable.innerHTML = `
+            <tr><td style="width: 120px;"><strong>设备名称</strong></td><td>${escapeHtml(d.name)}</td></tr>
+            <tr><td><strong>IP地址</strong></td><td>${renderDeviceDetailIps(d)}</td></tr>
+            <tr><td><strong>设备类型</strong></td><td>${deviceTypeLabel(d.device_type)}</td></tr>
+            <tr><td><strong>分组</strong></td><td>${escapeHtml(d.group_name || '-')}</td></tr>
+            <tr><td><strong>所属公司</strong></td><td>${d.company ? escapeHtml(d.company) : '-'}</td></tr>
+            <tr><td><strong>型号</strong></td><td>${d.model ? escapeHtml(d.model) : '-'}</td></tr>
+            <tr><td><strong>功能 / 用途</strong></td><td>${d.function ? escapeHtml(d.function) : '-'}</td></tr>
+            <tr><td><strong>状态</strong></td><td>${statusBadge(d.status)}</td></tr>
+            <tr><td><strong>SSH端口</strong></td><td>${d.port}</td></tr>
+            <tr><td><strong>最后在线</strong></td><td>${formatDateTime(d.last_seen)}</td></tr>
+            <tr><td><strong>最后备份</strong></td><td>${formatDateTime(d.last_backup)}</td></tr>
+            <tr><td><strong>最后发现</strong></td><td>${formatDateTime(d.last_discovery)}</td></tr>
+            <tr><td><strong>最后采集</strong></td><td>${formatDateTime(d.last_info_collection)} <button class="btn btn-sm btn-outline" onclick="collectInfo()" title="重新采集设备信息">🔄 立即刷新</button></td></tr>
+        `;
+
+        // Try to load collected info
+        try {
+            const info = await API.get(`/api/devices/${deviceId}/info`);
+            document.getElementById('info-hostname').textContent = info.hostname || d.name;
+            document.getElementById('info-model').textContent = info.model || '-';
+            document.getElementById('info-serial').textContent = info.serial_number || '-';
+
+            // Production date: prefer manual, show source so the operator knows.
+            const pd = info.production_date || '';
+            const pdSrc = info.production_date_source || '';
+            document.getElementById('info-proddate').textContent = pd || (info.serial_number ? '未识别（点击设置）' : '未采集');
+            const srcLabel = pd
+                ? (pdSrc === 'manual' ? '手动' : pdSrc === 'auto' ? '自动' : pdSrc === 'serial' ? '自动' : pdSrc)
+                : '';
+            document.getElementById('info-proddate-src').textContent = srcLabel ? '(' + srcLabel + ')' : '';
+            // Show pattern + raw match as tooltip so the operator can see why
+            // we picked (or didn't pick) a date.
+            const pdTooltipParts = [];
+            if (info.production_date_pattern) pdTooltipParts.push('匹配模式: ' + info.production_date_pattern);
+            if (info.production_date_raw_match) pdTooltipParts.push('匹配文本: ' + info.production_date_raw_match);
+            if (pdTooltipParts.length) {
+                document.getElementById('info-proddate').title = pdTooltipParts.join(' | ');
+            } else {
+                document.getElementById('info-proddate').removeAttribute('title');
+            }
+
+            document.getElementById('info-cpu').textContent = info.cpu_usage || '未采集';
+            document.getElementById('info-memory').textContent = info.memory_usage || '未采集';
+
+            const ageHint = info.age_seconds != null ? ` <span style="color:#888;font-size:11px;">(${formatAge(info.age_seconds)}前)</span>` : '';
+            infoTable.innerHTML += `
+                <tr><td><strong>OS类型</strong></td><td>${escapeHtml(info.os_type || '-')}</td></tr>
+                <tr><td><strong>OS版本</strong></td><td>${escapeHtml(info.os_version || '-')}</td></tr>
+                <tr><td><strong>运行时间</strong></td><td>${escapeHtml(info.uptime || '-')}</td></tr>
+                <tr><td><strong>CPU利用率</strong></td><td>${escapeHtml(info.cpu_usage || '-')}</td></tr>
+                <tr><td><strong>内存使用</strong></td><td>${escapeHtml(info.memory_usage || '-')}</td></tr>
+                <tr><td><strong>接口状态</strong></td><td><span class="badge badge-success">UP ${info.interface_up_count || 0}</span> <span class="badge badge-danger">DOWN ${info.interface_down_count || 0}</span></td></tr>
+                <tr><td><strong>接口数量</strong></td><td>${(info.interfaces || []).length}</td></tr>
+                <tr><td><strong>采集时间</strong></td><td>${formatDateTime(info.collected_at)}${ageHint}</td></tr>
+            `;
+        } catch (e) {
+            // No info collected yet
+            document.getElementById('info-model').textContent = '未采集';
+            document.getElementById('info-serial').textContent = '未采集';
+            document.getElementById('info-proddate').textContent = '未采集（点击采集）';
+            document.getElementById('info-cpu').textContent = '未采集';
+            document.getElementById('info-memory').textContent = '未采集';
+        }
+    } catch (e) {
+        showToast('加载设备信息失败: ' + e.message, 'error');
+    }
+}
+
+function formatAge(seconds) {
+    if (seconds == null) return '';
+    if (seconds < 60) return `${seconds} 秒`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时`;
+    return `${Math.floor(seconds / 86400)} 天`;
+}
+
+async function editProductionDate() {
+    const cur = document.getElementById('info-proddate').textContent;
+    const val = prompt('手动设置出厂日期（YYYY-MM-DD 或 YYYY-MM，留空清除）:', cur === '-' || cur.startsWith('未') ? '' : cur);
+    if (val === null) return;
+    try {
+        await API.put(`/api/devices/${deviceId}`, { production_date_manual: val.trim() });
+        showToast('已保存', 'success');
+        loadDeviceInfo();
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'error');
+    }
+}
+
+async function loadNeighbors() {
+    try {
+        const neighbors = await API.get(`/api/topology/neighbors?device_id=${deviceId}`);
+        const body = document.getElementById('neighborsTable');
+        if (neighbors && neighbors.length > 0) {
+            body.innerHTML = neighbors.map(n => `
+                <tr>
+                    <td>${escapeHtml(n.neighbor_name || '-')}</td>
+                    <td>${escapeHtml(n.neighbor_ip || '-')}</td>
+                    <td>${escapeHtml(n.local_interface || '-')}</td>
+                    <td>${escapeHtml(n.neighbor_interface || '-')}</td>
+                    <td><span class="badge badge-info">${escapeHtml((n.protocol || '').toUpperCase())}</span></td>
+                </tr>
+            `).join('');
+        } else {
+            body.innerHTML = '<tr><td colspan="5" class="empty-state">暂无邻居数据，请执行邻居发现</td></tr>';
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+async function loadBackupHistory() {
+    try {
+        const history = await API.get(`/api/backups/device/${deviceId}/history`);
+        const body = document.getElementById('backupHistoryTable');
+        if (history && history.length > 0) {
+            body.innerHTML = history.map(b => `
+                <tr>
+                    <td>${formatDateTime(b.backup_time)}</td>
+                    <td>${b.is_changed ? '<span class="badge badge-warning">已变更</span>' : '<span class="badge badge-success">无变更</span>'}</td>
+                    <td>${(b.backup_size / 1024).toFixed(1)} KB</td>
+                    <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(b.change_summary || '-')}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline" onclick="viewConfig(${b.id})">查看</button>
+                        <a class="btn btn-sm btn-outline" href="/api/backups/${b.id}/download" style="text-decoration: none;">下载</a>
+                    </td>
+                </tr>
+            `).join('');
+        } else {
+            body.innerHTML = '<tr><td colspan="5" class="empty-state">暂无备份记录</td></tr>';
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function ifStatusBadge(status) {
+    const s = (status || "").toLowerCase();
+    if (s === "up") return '<span class="badge badge-success">UP</span>';
+    if (s === "administratively down") return '<span class="badge badge-warning">DOWN (管理关闭)</span>';
+    if (s === "down") return '<span class="badge badge-danger">DOWN</span>';
+    return `<span class="badge badge-secondary">${escapeHtml(status || "-")}</span>`;
+}
+
+async function loadInterfaces() {
+    try {
+        const info = await API.get(`/api/devices/${deviceId}/info`);
+        const interfaces = info.interfaces || [];
+        const body = document.getElementById('interfaceTable');
+        if (interfaces.length > 0) {
+            body.innerHTML = interfaces.map(i => `
+                <tr>
+                    <td><code>${escapeHtml(i.name || "-")}</code></td>
+                    <td>${i.ip_address && i.ip_address !== "unassigned" ? `<code>${escapeHtml(i.ip_address)}</code>` : '<span class="text-muted">未配置</span>'}</td>
+                    <td>${ifStatusBadge(i.status)}</td>
+                    <td>${ifStatusBadge(i.protocol)}</td>
+                </tr>
+            `).join('');
+        } else {
+            body.innerHTML = '<tr><td colspan="4" class="empty-state">暂无接口数据，请执行信息采集</td></tr>';
+        }
+    } catch (e) {
+        document.getElementById('interfaceTable').innerHTML =
+            '<tr><td colspan="4" class="empty-state">暂无接口数据</td></tr>';
+    }
+}
+
+async function viewConfig(backupId) {
+    document.getElementById('configModal').classList.add('active');
+    document.getElementById('configContent').textContent = '加载中...';
+    try {
+        const backup = await API.get(`/api/backups/${backupId}`);
+        document.getElementById('configContent').textContent = backup.config_text;
+    } catch (e) {
+        document.getElementById('configContent').textContent = '加载失败: ' + e.message;
+    }
+}
+
+async function backupDevice() {
+    showLoading();
+    try {
+        const result = await API.post(`/api/backups/run?device_ids=${deviceId}`);
+        showToast(`备份${result.success_count > 0 ? '成功' : '失败'}`, result.success_count > 0 ? 'success' : 'error');
+        loadDeviceInfo();
+        loadBackupHistory();
+    } catch (e) {
+        showToast('备份失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+async function discoverDevice() {
+    showLoading();
+    try {
+        const result = await API.post('/api/topology/discover', [parseInt(deviceId)]);
+        showToast(`发现${result.success_count > 0 ? '成功' : '失败'}`, result.success_count > 0 ? 'success' : 'error');
+        loadDeviceInfo();
+        loadNeighbors();
+    } catch (e) {
+        showToast('发现失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+async function collectInfo() {
+    showLoading();
+    try {
+        // Background mode: server starts a daemon thread and returns immediately.
+        // Poll the info endpoint until the collected_at timestamp advances.
+        const r = await API.post(`/api/devices/${deviceId}/collect-info?background=true`);
+        showToast(r.message || '采集已启动（后台执行）', 'info');
+
+        // Capture current timestamp so we know when the new record lands.
+        let prevCollectedAt = null;
+        try {
+            const prev = await API.get(`/api/devices/${deviceId}/info`);
+            prevCollectedAt = prev.collected_at;
+        } catch (_) { /* no prior info */ }
+
+        const pollDeadline = Date.now() + 90_000;  // up to 90s
+        const pollInterval = setInterval(async () => {
+            try {
+                const latest = await API.get(`/api/devices/${deviceId}/info`);
+                if (latest.collected_at && latest.collected_at !== prevCollectedAt) {
+                    clearInterval(pollInterval);
+                    showToast('信息采集已完成', 'success');
+                    loadDeviceInfo();
+                    hideLoading();
+                } else if (Date.now() > pollDeadline) {
+                    clearInterval(pollInterval);
+                    showToast('采集超时，请到「系统日志」查看进度', 'warning');
+                    hideLoading();
+                }
+            } catch (_) { /* keep polling */ }
+        }, 2000);
+    } catch (e) {
+        showToast('采集启动失败: ' + e.message, 'error');
+        hideLoading();
+    }
+}
+
+loadDeviceInfo();
+loadNeighbors();
+loadBackupHistory();
+loadInterfaces();
+</script>
+{% endblock %}

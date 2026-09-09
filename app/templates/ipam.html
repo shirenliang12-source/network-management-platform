@@ -1,0 +1,784 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .ipam-tabs { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+  .ipam-tabs .tab-btn { padding:8px 16px; border:1px solid #d8dee9; background:#fff; border-radius:6px; cursor:pointer; font-size:14px; }
+  .ipam-tabs .tab-btn.active { background:#3b82f6; color:#fff; border-color:#3b82f6; }
+  .stat-cards { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
+  .stat-card { flex:1; min-width:160px; background:#fff; border:1px solid #e6eaf0; border-radius:10px; padding:14px 16px; }
+  .stat-card .num { font-size:26px; font-weight:700; }
+  .stat-card .lbl { color:#888; font-size:13px; margin-top:2px; }
+  .stat-card .sub { color:#666; font-size:12px; margin-top:6px; }
+  .util-bar { height:8px; background:#eef1f6; border-radius:4px; overflow:hidden; min-width:80px; }
+  .util-fill { height:100%; border-radius:4px; }
+  .tree-node { padding:6px 0; border-left:2px solid #eef1f6; }
+  .tree-children { margin-left:18px; }
+  .tree-row { display:flex; align-items:center; gap:10px; padding:4px 8px; border-radius:6px; }
+  .tree-row:hover { background:#f6f8fb; }
+  .tree-row .pfx { font-family:monospace; font-size:13px; }
+  .agg-box { background:#fff; border:1px solid #e6eaf0; border-radius:10px; padding:14px; margin-bottom:14px; }
+  .agg-title { font-weight:700; font-size:15px; margin-bottom:8px; }
+  .mini-row { display:flex; align-items:center; gap:10px; padding:3px 0; font-size:13px; }
+  .indent { display:inline-block; }
+</style>
+
+<div class="page-header">
+    <h1>IP 地址规划 (IPAM)</h1>
+    <div style="color:#888;font-size:13px;">NetBox 风格三层结构：聚合（大子网）→ 网段 → IP 地址；统一四态：规划 / 预分配 / 使用中 / 已停用</div>
+</div>
+
+<div class="ipam-tabs">
+    <button class="tab-btn active" onclick="switchTab('overview')">📊 概览</button>
+    <button class="tab-btn" onclick="switchTab('aggregates')">🧱 聚合</button>
+    <button class="tab-btn" onclick="switchTab('prefixes')">🌐 网段</button>
+    <button class="tab-btn" onclick="switchTab('ips')">🔢 IP 地址</button>
+</div>
+
+<!-- ============ 概览 ============ -->
+<div id="tab-overview">
+    <div class="stat-cards" id="overviewCards">
+        <div class="stat-card"><div class="num" id="stat-agg">0</div><div class="lbl">聚合（大子网）</div></div>
+        <div class="stat-card"><div class="num" id="stat-pfx">0</div><div class="lbl">网段总数</div></div>
+        <div class="stat-card"><div class="num" id="stat-ip">0</div><div class="lbl">IP 地址总数</div></div>
+    </div>
+    <div class="stat-cards" id="statusCards"></div>
+
+    <div class="card" style="margin-top:8px;">
+        <div class="card-header">各聚合利用率</div>
+        <div class="card-body" id="aggUtilBody"><div class="empty-state">加载中...</div></div>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+        <div class="card-header">网络规划树（聚合 → 网段 → 子网段）</div>
+        <div class="card-body" id="treeBody"><div class="empty-state">加载中...</div></div>
+    </div>
+</div>
+
+<!-- ============ 聚合 ============ -->
+<div id="tab-aggregates" style="display:none;">
+    <div class="search-bar">
+        <input type="text" class="form-control" id="aggSearch" placeholder="搜索 名称 / 前缀 / 描述..." oninput="loadAggregates()">
+        <button class="btn btn-primary" onclick="showAddAggModal()">➕ 新增聚合</button>
+        <button class="btn btn-outline" onclick="exportIpam('aggregates')">📤 导出CSV</button>
+        <button class="btn btn-outline" onclick="openImportModal()">📥 导入CSV</button>
+    </div>
+    <div class="card">
+        <div class="card-body">
+            <div class="table-container">
+                <table class="data-table">
+                    <thead><tr>
+                        <th>名称</th><th>前缀</th><th>描述</th><th>网段数</th><th>IP数</th><th>利用率</th><th>操作</th>
+                    </tr></thead>
+                    <tbody id="aggTableBody"><tr><td colspan="7" class="empty-state">加载中...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ 网段 ============ -->
+<div id="tab-prefixes" style="display:none;">
+    <div class="search-bar">
+        <select class="form-control" id="pfxAggFilter" style="width:180px;" onchange="loadPrefixes()">
+            <option value="">全部聚合</option>
+        </select>
+        <select class="form-control" id="pfxStatusFilter" style="width:140px;" onchange="loadPrefixes()">
+            <option value="">全部状态</option>
+            <option value="规划">规划</option>
+            <option value="预分配">预分配</option>
+            <option value="使用中">使用中</option>
+            <option value="已停用">已停用</option>
+        </select>
+        <input type="text" class="form-control" id="pfxSearch" placeholder="搜索 前缀 / 用途 / VLAN / 公司 / Firewall..." oninput="loadPrefixes()">
+        <button class="btn btn-primary" onclick="showAddPrefixModal()">➕ 新增网段</button>
+        <button class="btn btn-outline" onclick="exportIpam('prefixes')">📤 导出CSV</button>
+        <button class="btn btn-outline" onclick="openImportModal()">📥 导入CSV</button>
+    </div>
+    <div class="card">
+        <div class="card-body">
+            <div class="table-container">
+                <table class="data-table">
+                    <thead><tr>
+                        <th>网段 (前缀)</th><th>状态</th><th>用途</th><th>VLAN</th><th>公司</th>
+                        <th>利用率</th><th>子网</th><th>操作</th>
+                    </tr></thead>
+                    <tbody id="pfxTableBody"><tr><td colspan="8" class="empty-state">加载中...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ IP 地址 ============ -->
+<div id="tab-ips" style="display:none;">
+    <div class="search-bar">
+        <select class="form-control" id="ipPrefixFilter" style="width:240px;" onchange="onIpPrefixChange()">
+            <option value="">请选择网段...</option>
+        </select>
+        <select class="form-control" id="ipStatusFilter" style="width:140px;" onchange="loadIps()">
+            <option value="">全部状态</option>
+            <option value="规划">规划</option>
+            <option value="预分配">预分配</option>
+            <option value="使用中">使用中</option>
+            <option value="已停用">已停用</option>
+        </select>
+        <select class="form-control" id="ipAllocFilter" style="width:140px;" onchange="loadIps()">
+            <option value="">全部类型</option>
+            <option value="静态">静态</option>
+            <option value="DHCP">DHCP</option>
+        </select>
+        <input type="text" class="form-control" id="ipSearch" placeholder="搜索 IP / DNS / 描述..." oninput="loadIps()">
+        <button class="btn btn-outline" onclick="generateIps()" id="genBtn" disabled>⚡ 批量生成整段IP</button>
+        <button class="btn btn-primary" onclick="showAddIpModal()" id="addIpBtn" disabled>➕ 新增IP</button>
+        <button class="btn btn-outline" onclick="exportIpam('ips')">📤 导出CSV</button>
+        <button class="btn btn-outline" onclick="openImportModal()">📥 导入CSV</button>
+    </div>
+    <div class="card">
+        <div class="card-body">
+            <div id="ipMeta" style="font-size:13px;color:#666;margin-bottom:10px;"></div>
+            <div id="staticSummary" style="margin-bottom:14px;"></div>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead><tr>
+                        <th>IP 地址</th><th>状态</th><th>分配类型</th><th>DNS 名称</th><th>关联设备</th><th>描述</th><th>操作</th>
+                    </tr></thead>
+                    <tbody id="ipTableBody"><tr><td colspan="6" class="empty-state">请先选择上方网段</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STATUS_LIST = ["规划","预分配","使用中","已停用"];
+function statusBadgeIPAM(s){
+    const map = {
+        '规划':'<span class="badge badge-info">规划</span>',
+        '预分配':'<span class="badge badge-warning">预分配</span>',
+        '使用中':'<span class="badge badge-success">使用中</span>',
+        '已停用':'<span class="badge badge-secondary">已停用</span>',
+    };
+    return map[s] || `<span class="badge badge-secondary">${escapeHtml(s||'')}</span>`;
+}
+function statusColor(s){
+    return ({'规划':'#3b82f6','预分配':'#f59e0b','使用中':'#22c55e','已停用':'#9ca3af'})[s] || '#9ca3af';
+}
+function utilBar(pct, status){
+    const w = Math.max(0, Math.min(100, pct||0));
+    return `<div class="util-bar"><div class="util-fill" style="width:${w}%;background:${statusColor(status)}"></div></div>`;
+}
+function switchTab(name){
+    ['overview','aggregates','prefixes','ips'].forEach(t=>{
+        document.getElementById('tab-'+t).style.display = (t===name)?'block':'none';
+    });
+    document.querySelectorAll('.ipam-tabs .tab-btn').forEach(b=>b.classList.remove('active'));
+    event.target.classList.add('active');
+    if(name==='overview') loadStats();
+    if(name==='aggregates') loadAggregates();
+    if(name==='prefixes') loadPrefixes();
+    if(name==='ips') { loadPrefixOptions(); loadIps(); }
+}
+
+// ---------------- 概览 ----------------
+async function loadStats(){
+    try{
+        const s = await API.get('/api/ipam/stats');
+        document.getElementById('stat-agg').textContent = s.aggregates_count;
+        document.getElementById('stat-pfx').textContent = s.prefixes_total;
+        document.getElementById('stat-ip').textContent = s.ips_total;
+        // 状态卡片
+        const cards = STATUS_LIST.map(st=>{
+            const p = s.prefixes_by_status[st]||0;
+            const i = s.ips_by_status[st]||0;
+            return `<div class="stat-card" style="border-left:4px solid ${statusColor(st)};">
+                <div class="num" style="font-size:18px;">${st}</div>
+                <div class="sub">网段 <b>${p}</b> · IP <b>${i}</b></div>
+            </div>`;
+        }).join('');
+        document.getElementById('statusCards').innerHTML = cards;
+        // 聚合利用率
+        const ub = document.getElementById('aggUtilBody');
+        if(s.aggregate_utilization.length===0){
+            ub.innerHTML = '<div class="empty-state">暂无聚合，请先到「聚合」页添加大子网</div>';
+        } else {
+            ub.innerHTML = s.aggregate_utilization.map(a=>`
+                <div style="margin-bottom:10px;">
+                    <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">
+                        <span><b>${escapeHtml(a.name)}</b> <code>${escapeHtml(a.prefix)}</code> · IP ${a.ip_count}</span>
+                        <span>${a.utilization}%</span>
+                    </div>
+                    ${utilBar(a.utilization,'使用中')}
+                </div>`).join('');
+        }
+        loadTree();
+    }catch(e){ showToast('加载概览失败: '+e.message,'error'); }
+}
+
+async function loadTree(){
+    try{
+        const tree = await API.get('/api/ipam/tree');
+        const body = document.getElementById('treeBody');
+        if(!tree || tree.length===0){ body.innerHTML='<div class="empty-state">暂无数据，请先添加聚合与网段</div>'; return; }
+        body.innerHTML = tree.map(renderAgg).join('');
+    }catch(e){ console.error(e); }
+}
+function renderAgg(agg){
+    return `<div class="agg-box">
+        <div class="agg-title">🧱 ${escapeHtml(agg.name)} <code style="font-size:13px;">${escapeHtml(agg.prefix)}</code>
+            <span style="font-weight:400;color:#888;font-size:12px;">· 网段 ${agg.prefix_count} · IP ${agg.ip_count} · 利用率 ${agg.utilization}%</span></div>
+        <div class="tree-children">${agg.children.map(n=>renderPfx(n,0)).join('') || '<div class="empty-state" style="padding:6px;">该聚合下暂无网段</div>'}</div>
+    </div>`;
+}
+function renderPfx(n, depth){
+    const childHtml = (n.children&&n.children.length)? `<div class="tree-children">${n.children.map(c=>renderPfx(c,depth+1)).join('')}</div>` : '';
+    const indent = 18*depth;
+    return `<div class="tree-node">
+        <div class="tree-row" style="margin-left:${indent}px;">
+            <span style="width:10px;height:10px;border-radius:50%;background:${statusColor(n.status)};display:inline-block;"></span>
+            <span class="pfx">${escapeHtml(n.prefix)}</span>
+            ${statusBadgeIPAM(n.status)}
+            ${n.role?`<span class="badge badge-secondary">${escapeHtml(n.role)}</span>`:''}
+            ${n.vlan?`<span style="font-size:12px;color:#666;">VLAN ${escapeHtml(n.vlan)}</span>`:''}
+            <span style="font-size:12px;color:#999;">已分配 ${n.allocated_ips}/${n.usable_ips}</span>
+            ${utilBar(n.utilization,n.status)}
+            <span style="margin-left:auto;display:flex;gap:4px;">
+                <button class="btn btn-sm btn-outline" onclick="switchToIps(${n.id})">查看IP</button>
+                <button class="btn btn-sm btn-outline" onclick="addChildPrefix(${n.id})">+子网</button>
+                <button class="btn btn-sm btn-outline" onclick="editPrefix(${n.id})">编辑</button>
+            </span>
+        </div>
+        ${childHtml}
+    </div>`;
+}
+
+// ---------------- 聚合 ----------------
+async function loadAggregates(){
+    const search = document.getElementById('aggSearch').value;
+    let url = '/api/ipam/aggregates?';
+    if(search) url += 'search='+encodeURIComponent(search)+'&';
+    try{
+        const list = await API.get(url);
+        const body = document.getElementById('aggTableBody');
+        if(list.length===0){ body.innerHTML='<tr><td colspan="7" class="empty-state">暂无聚合，点击右上角"新增聚合"</td></tr>'; return; }
+        body.innerHTML = list.map(a=>`
+            <tr>
+                <td><b>${escapeHtml(a.name)}</b></td>
+                <td><code>${escapeHtml(a.prefix)}</code></td>
+                <td style="max-width:240px;word-break:break-all;">${a.description?escapeHtml(a.description):'<span style="color:#999;">-</span>'}</td>
+                <td>${a.prefix_count}</td>
+                <td>${a.ip_count}</td>
+                <td style="min-width:120px;">${utilBar(a.utilization,'使用中')}<div style="font-size:11px;color:#999;">${a.utilization}%</div></td>
+                <td>
+                    <button class="btn btn-sm btn-outline" onclick="viewAggPrefixes(${a.id})">查看网段</button>
+                    <button class="btn btn-sm btn-outline" onclick="editAgg(${a.id})">编辑</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteAgg(${a.id})">删除</button>
+                </td>
+            </tr>`).join('');
+    }catch(e){ showToast('加载聚合失败: '+e.message,'error'); }
+}
+function showAddAggModal(){
+    const modal = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal"><div class="modal-header"><h3>新增聚合（大子网）</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+            <div class="modal-body">
+                <div class="form-group"><label>名称 *</label><input type="text" class="form-control" id="agg-name" placeholder="如 总部大子网 / 10.20.0.0 段"></div>
+                <div class="form-group"><label>前缀 (CIDR) *</label><input type="text" class="form-control" id="agg-prefix" placeholder="如 10.20.0.0/16"></div>
+                <div class="form-group"><label>规划日期</label><input type="text" class="form-control" id="agg-date" placeholder="如 2026-08"></div>
+                <div class="form-group"><label>描述</label><textarea class="form-control" id="agg-desc" rows="2" placeholder="补充说明..."></textarea></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                <button class="btn btn-primary" onclick="submitAddAgg()">保存</button>
+            </div></div></div>`;
+    document.getElementById('modalContainer').innerHTML = modal;
+}
+async function submitAddAgg(){
+    const data = {
+        name: document.getElementById('agg-name').value.trim(),
+        prefix: document.getElementById('agg-prefix').value.trim(),
+        date_added: document.getElementById('agg-date').value.trim(),
+        description: document.getElementById('agg-desc').value.trim(),
+    };
+    if(!data.name || !data.prefix){ showToast('请填写名称和前缀','warning'); return; }
+    try{
+        await API.post('/api/ipam/aggregates', data);
+        showToast('已新增聚合','success');
+        document.querySelector('.modal-overlay').remove();
+        loadAggregates();
+    }catch(e){ showToast('新增失败: '+e.message,'error'); }
+}
+async function editAgg(id){
+    try{
+        const a = await API.get('/api/ipam/aggregates/'+id);
+        const modal = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal"><div class="modal-header"><h3>编辑聚合</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+            <div class="modal-body">
+                <div class="form-group"><label>名称 *</label><input type="text" class="form-control" id="edit-agg-name" value="${escapeHtml(a.name)}"></div>
+                <div class="form-group"><label>前缀 (CIDR) *</label><input type="text" class="form-control" id="edit-agg-prefix" value="${escapeHtml(a.prefix)}"></div>
+                <div class="form-group"><label>规划日期</label><input type="text" class="form-control" id="edit-agg-date" value="${escapeHtml(a.date_added||'')}"></div>
+                <div class="form-group"><label>描述</label><textarea class="form-control" id="edit-agg-desc" rows="2">${escapeHtml(a.description||'')}</textarea></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                <button class="btn btn-primary" onclick="submitEditAgg(${id})">保存</button>
+            </div></div></div>`;
+        document.getElementById('modalContainer').innerHTML = modal;
+    }catch(e){ showToast('加载失败: '+e.message,'error'); }
+}
+async function submitEditAgg(id){
+    const data = {
+        name: document.getElementById('edit-agg-name').value.trim(),
+        prefix: document.getElementById('edit-agg-prefix').value.trim(),
+        date_added: document.getElementById('edit-agg-date').value.trim(),
+        description: document.getElementById('edit-agg-desc').value.trim(),
+    };
+    try{
+        await API.put('/api/ipam/aggregates/'+id, data);
+        showToast('已保存','success');
+        document.querySelector('.modal-overlay').remove();
+        loadAggregates();
+    }catch(e){ showToast('保存失败: '+e.message,'error'); }
+}
+async function deleteAgg(id){
+    if(!confirm('确定删除该聚合吗？其下所有网段与 IP 将一并删除。')) return;
+    try{
+        await API.delete('/api/ipam/aggregates/'+id);
+        showToast('已删除','success');
+        loadAggregates();
+        loadStats();
+    }catch(e){ showToast('删除失败: '+e.message,'error'); }
+}
+function viewAggPrefixes(id){
+    switchTab('prefixes');
+    document.getElementById('pfxAggFilter').value = String(id);
+    loadPrefixes();
+}
+
+// ---------------- 网段 ----------------
+let allPrefixes = [];
+async function loadPrefixes(){
+    const agg = document.getElementById('pfxAggFilter').value;
+    const status = document.getElementById('pfxStatusFilter').value;
+    const search = document.getElementById('pfxSearch').value;
+    let url = '/api/ipam/prefixes?';
+    if(agg) url += 'aggregate_id='+encodeURIComponent(agg)+'&';
+    if(status) url += 'status='+encodeURIComponent(status)+'&';
+    if(search) url += 'search='+encodeURIComponent(search)+'&';
+    try{
+        allPrefixes = await API.get(url);
+        // 聚合下拉
+        const aggs = await API.get('/api/ipam/aggregates');
+        const sel = document.getElementById('pfxAggFilter');
+        const cur = sel.value;
+        sel.innerHTML = '<option value="">全部聚合</option>'+aggs.map(a=>`<option value="${a.id}">${escapeHtml(a.name)} (${escapeHtml(a.prefix)})</option>`).join('');
+        sel.value = cur;
+        renderPrefixes();
+    }catch(e){ showToast('加载网段失败: '+e.message,'error'); }
+}
+function renderPrefixes(){
+    const body = document.getElementById('pfxTableBody');
+    if(allPrefixes.length===0){ body.innerHTML='<tr><td colspan="8" class="empty-state">暂无网段，点击右上角"新增网段"</td></tr>'; return; }
+    // 计算深度
+    const byId = {}; allPrefixes.forEach(p=>byId[p.id]=p);
+    const depthOf = (p)=>{ let d=0; let cur=p; while(cur&&cur.parent_id){ d++; cur=byId[cur.parent_id]; if(!cur) break; } return d; };
+    const sorted = [...allPrefixes].sort((a,b)=> a.prefix.localeCompare(b.prefix));
+    body.innerHTML = sorted.map(p=>{
+        const d = depthOf(p);
+        const indent = 18*d;
+        return `<tr>
+            <td style="padding-left:${8+indent}px;"><code>${escapeHtml(p.prefix)}</code>${p.is_pool?' <span class="badge badge-info">分配池</span>':''}</td>
+            <td>${statusBadgeIPAM(p.status)}</td>
+            <td>${p.role?escapeHtml(p.role):'<span style="color:#999;">-</span>'}</td>
+            <td>${p.vlan?escapeHtml(p.vlan):'-'}</td>
+            <td>${p.company?`<span class="badge badge-secondary">${escapeHtml(p.company)}</span>`:'-'}</td>
+            <td style="min-width:120px;">${utilBar(p.utilization,p.status)}<div style="font-size:11px;color:#999;">${p.allocated_ips}/${p.usable_ips} (${p.utilization}%)</div></td>
+            <td>${p.child_count>0?`<span class="badge badge-secondary">${p.child_count} 个子网</span>`:'-'}</td>
+            <td>
+                <button class="btn btn-sm btn-outline" onclick="switchToIps(${p.id})">查看IP</button>
+                <button class="btn btn-sm btn-outline" onclick="addChildPrefix(${p.id})">+子网</button>
+                <button class="btn btn-sm btn-outline" onclick="editPrefix(${p.id})">编辑</button>
+                <button class="btn btn-sm btn-danger" onclick="deletePrefix(${p.id})">删除</button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+function showAddPrefixModal(parentId){
+    openPrefixModal(null, parentId);
+}
+function addChildPrefix(parentId){ openPrefixModal(null, parentId); }
+async function openPrefixModal(id, parentId){
+    let p = null;
+    if(id){ try{ p = await API.get('/api/ipam/prefixes/'+id); }catch(e){ showToast('加载失败: '+e.message,'error'); return; } }
+    const aggs = await API.get('/api/ipam/aggregates');
+    const pfxs = await API.get('/api/ipam/prefixes');
+    const aggOpts = '<option value="">（无 / 独立网段）</option>'+aggs.map(a=>`<option value="${a.id}">${escapeHtml(a.name)} (${escapeHtml(a.prefix)})</option>`).join('');
+    let pfxOpts = '<option value="">（无 / 顶层网段）</option>'+pfxs.filter(x=>x.id!==id).map(x=>`<option value="${x.id}">${escapeHtml(x.prefix)}</option>`).join('');
+    const title = id? '编辑网段' : (parentId? '新增子网段' : '新增网段');
+    const modal = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal"><div class="modal-header"><h3>${title}</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+            <div class="modal-body">
+                <div class="form-group"><label>所属聚合</label><select class="form-control" id="pf-agg">${aggOpts}</select></div>
+                <div class="form-group"><label>父网段</label><select class="form-control" id="pf-parent">${pfxOpts}</select></div>
+                <div class="form-group"><label>网段前缀 (CIDR) *</label><input type="text" class="form-control" id="pf-prefix" placeholder="如 10.20.1.0/24" value="${p?escapeHtml(p.prefix):''}"></div>
+                <div class="form-group"><label>状态</label><select class="form-control" id="pf-status">${STATUS_LIST.map(s=>`<option value="${s}" ${p&&p.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+                <div class="form-group"><label>用途 / 角色</label><input type="text" class="form-control" id="pf-role" placeholder="如 办公网 / 服务器区" value="${p?escapeHtml(p.role||''):''}"></div>
+                <div class="form-group"><label>VLAN ID</label><input type="text" class="form-control" id="pf-vlan" value="${p?escapeHtml(p.vlan||''):''}"></div>
+                <div class="form-group"><label>公司</label><input type="text" class="form-control" id="pf-company" value="${p?escapeHtml(p.company||''):''}"></div>
+                <div class="form-group"><label>Firewall</label><input type="text" class="form-control" id="pf-firewall" value="${p?escapeHtml(p.firewall||''):''}"></div>
+                <div class="form-group"><label>Zone/Interface Name</label><input type="text" class="form-control" id="pf-zone" value="${p?escapeHtml(p.zone_interface_name||''):''}"></div>
+                <div class="form-group"><label><input type="checkbox" id="pf-pool" ${p&&p.is_pool?'checked':''}> 作为 IP 分配池（可在此网段内分配具体 IP）</label></div>
+                <div class="form-group"><label>描述</label><textarea class="form-control" id="pf-desc" rows="2">${p?escapeHtml(p.description||''):''}</textarea></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                <button class="btn btn-primary" onclick="submitPrefix(${id||'null'},${parentId||'null'})">保存</button>
+            </div></div></div>`;
+    document.getElementById('modalContainer').innerHTML = modal;
+    if(p){ document.getElementById('pf-agg').value = p.aggregate_id? String(p.aggregate_id):''; document.getElementById('pf-parent').value = p.parent_id? String(p.parent_id):''; }
+    else if(parentId){ const parent = pfxs.find(x=>x.id===parentId); if(parent){ document.getElementById('pf-parent').value=String(parentId); document.getElementById('pf-agg').value = parent.aggregate_id? String(parent.aggregate_id):''; } }
+}
+async function submitPrefix(id, parentId){
+    const data = {
+        prefix: document.getElementById('pf-prefix').value.trim(),
+        aggregate_id: parseInt(document.getElementById('pf-agg').value)||null,
+        parent_id: parseInt(document.getElementById('pf-parent').value)||null,
+        status: document.getElementById('pf-status').value,
+        role: document.getElementById('pf-role').value.trim(),
+        vlan: document.getElementById('pf-vlan').value.trim(),
+        company: document.getElementById('pf-company').value.trim(),
+        firewall: document.getElementById('pf-firewall').value.trim(),
+        zone_interface_name: document.getElementById('pf-zone').value.trim(),
+        description: document.getElementById('pf-desc').value.trim(),
+        is_pool: document.getElementById('pf-pool').checked,
+    };
+    if(!data.prefix){ showToast('请填写网段前缀','warning'); return; }
+    try{
+        if(id){ await API.put('/api/ipam/prefixes/'+id, data); }
+        else { await API.post('/api/ipam/prefixes', data); }
+        showToast('已保存','success');
+        document.querySelector('.modal-overlay').remove();
+        loadPrefixes(); loadStats();
+    }catch(e){ showToast('保存失败: '+e.message,'error'); }
+}
+function editPrefix(id){ openPrefixModal(id, null); }
+async function deletePrefix(id){
+    if(!confirm('确定删除该网段吗？其下子网与 IP 将一并删除。')) return;
+    try{
+        await API.delete('/api/ipam/prefixes/'+id);
+        showToast('已删除','success');
+        loadPrefixes(); loadStats();
+    }catch(e){ showToast('删除失败: '+e.message,'error'); }
+}
+
+// ---------------- IP 地址 ----------------
+let currentPrefixId = null;
+async function loadPrefixOptions(){
+    const pfxs = await API.get('/api/ipam/prefixes');
+    const sel = document.getElementById('ipPrefixFilter');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">请选择网段...</option>'+pfxs.map(p=>`<option value="${p.id}">${escapeHtml(p.prefix)} ${p.role?'( '+escapeHtml(p.role)+' )':''}</option>`).join('');
+    sel.value = cur;
+}
+function onIpPrefixChange(){
+    currentPrefixId = parseInt(document.getElementById('ipPrefixFilter').value)||null;
+    const enabled = !!currentPrefixId;
+    document.getElementById('genBtn').disabled = !enabled;
+    document.getElementById('addIpBtn').disabled = !enabled;
+    loadIps();
+}
+function allocBadge(t){
+    if(t==='DHCP') return '<span class="badge badge-warning">DHCP</span>';
+    return '<span class="badge badge-info">静态</span>';
+}
+function renderStaticSummary(pfx){
+    const el = document.getElementById('staticSummary');
+    if(!pfx){ el.innerHTML=''; return; }
+    const devices = (pfx.static_device_list||[]);
+    const devRows = devices.length? devices.map(d=>`
+        <tr>
+            <td><b>${escapeHtml(d.device_name)}</b></td>
+            <td>${escapeHtml(d.device_model||'-')}</td>
+            <td><code>${escapeHtml(d.device_ip||d.address)}</code></td>
+            <td><code>${escapeHtml(d.address)}</code></td>
+            <td style="max-width:200px;word-break:break-all;">${d.description?escapeHtml(d.description):'<span style="color:#999;">-</span>'}</td>
+        </tr>`).join('') : '<tr><td colspan="5" class="empty-state" style="padding:6px;">暂无静态地址已分配给设备</td></tr>';
+    el.innerHTML = `
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:stretch;">
+        <div style="flex:1;min-width:180px;background:#f6f8fb;border:1px solid #e6eaf0;border-radius:8px;padding:10px 12px;">
+            <div style="font-size:12px;color:#888;">静态地址已使用（已分配设备）</div>
+            <div style="font-size:22px;font-weight:700;color:#22c55e;">${pfx.static_used}</div>
+        </div>
+        <div style="flex:1;min-width:180px;background:#f6f8fb;border:1px solid #e6eaf0;border-radius:8px;padding:10px 12px;">
+            <div style="font-size:12px;color:#888;">静态地址未使用</div>
+            <div style="font-size:22px;font-weight:700;color:#9ca3af;">${pfx.static_unused}</div>
+        </div>
+        <div style="flex:1;min-width:180px;background:#f6f8fb;border:1px solid #e6eaf0;border-radius:8px;padding:10px 12px;">
+            <div style="font-size:12px;color:#888;">DHCP 地址（不做设备统计）</div>
+            <div style="font-size:22px;font-weight:700;color:#f59e0b;">${pfx.dhcp_count}</div>
+        </div>
+    </div>
+    <div style="margin-top:10px;font-size:13px;color:#555;"><b>已使用静态地址的设备清单（${devices.length}）</b></div>
+    <div style="margin-top:6px;" class="table-container">
+        <table class="data-table" style="font-size:13px;">
+            <thead><tr><th>设备名称</th><th>型号</th><th>设备 IP</th><th>该 IP 地址</th><th>说明</th></tr></thead>
+            <tbody>${devRows}</tbody>
+        </table>
+    </div>`;
+}
+async function loadIps(){
+    if(!currentPrefixId){ document.getElementById('ipTableBody').innerHTML='<tr><td colspan="7" class="empty-state">请先选择上方网段</td></tr>'; document.getElementById('staticSummary').innerHTML=''; return; }
+    const status = document.getElementById('ipStatusFilter').value;
+    const alloc = document.getElementById('ipAllocFilter').value;
+    const search = document.getElementById('ipSearch').value;
+    let url = '/api/ipam/ips?prefix_id='+currentPrefixId+'&';
+    if(status) url += 'status='+encodeURIComponent(status)+'&';
+    if(alloc) url += 'allocation_type='+encodeURIComponent(alloc)+'&';
+    if(search) url += 'search='+encodeURIComponent(search)+'&';
+    try{
+        const list = await API.get(url);
+        const pfx = (await API.get('/api/ipam/prefixes/'+currentPrefixId));
+        const unused = Math.max((pfx.usable_ips||0) - (pfx.allocated_ips||0), 0);
+        document.getElementById('ipMeta').innerHTML = `当前网段 <code>${escapeHtml(pfx.prefix)}</code> · 总地址 <b>${pfx.total_ips}</b> · 可用 <b>${pfx.usable_ips}</b> · 已使用 <b>${pfx.allocated_ips}</b> · 未使用 <b>${unused}</b> · 使用中 <b>${pfx.in_use_ips}</b> · 利用率 <b>${pfx.utilization}%</b>`;
+        renderStaticSummary(pfx);
+        const body = document.getElementById('ipTableBody');
+        if(list.length===0){ body.innerHTML='<tr><td colspan="7" class="empty-state">该网段暂无 IP，可点"批量生成整段IP"或"新增IP"</td></tr>'; return; }
+        body.innerHTML = list.map(ip=>`
+            <tr>
+                <td><code>${escapeHtml(ip.address)}</code></td>
+                <td>${statusBadgeIPAM(ip.status)}</td>
+                <td>${allocBadge(ip.allocation_type)}</td>
+                <td>${ip.dns_name?escapeHtml(ip.dns_name):'<span style="color:#999;">-</span>'}</td>
+                <td>${renderDeviceIpsCell(ip)}</td>
+                <td style="max-width:220px;word-break:break-all;">${ip.description?escapeHtml(ip.description):'<span style="color:#999;">-</span>'}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline" onclick="editIp(${ip.id})">编辑</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteIp(${ip.id})">删除</button>
+                </td>
+            </tr>`).join('');
+    }catch(e){ showToast('加载IP失败: '+e.message,'error'); }
+}
+function renderDeviceIpsCell(ip){
+    if(!ip.assigned_device_name && !(ip.device_ips && ip.device_ips.length)) return '-';
+    const name = ip.assigned_device_name || '';
+    let html = `<div><span class="badge badge-secondary">${escapeHtml(name)}</span>`;
+    if(ip.reverse_linked) html += ' <span class="badge badge-info" title="由 IP 反查关联到的设备">反查</span>';
+    html += '</div>';
+    if(ip.device_ips && ip.device_ips.length){
+        html += '<div style="margin-top:3px;">' + ip.device_ips.map(e=>`<code style="margin-right:4px;display:inline-block;${e.is_primary?'font-weight:600;':''}">${escapeHtml(e.ip)}${e.is_primary?' <span style=\'font-size:10px;color:#888;\'>(主)</span>':''}</code>`).join('') + '</div>';
+    } else if(ip.device_model){
+        html += `<div style="font-size:11px;color:#888;margin-top:2px;">${escapeHtml(ip.device_model)}</div>`;
+    }
+    return html;
+}
+function showAddIpModal(){ openIpModal(null); }
+async function openIpModal(id){
+    let ip = null;
+    if(id){ try{ ip = await API.get('/api/ipam/ips/'+id); }catch(e){ showToast('加载失败: '+e.message,'error'); return; } }
+    const devices = await API.get('/api/ipam/devices');
+    const devOpts = '<option value="">（无）</option>'+devices.map(d=>`<option value="${d.id}">${escapeHtml(d.name)} (${escapeHtml((d.ip_addresses&&d.ip_addresses.length)?d.ip_addresses.join(', '):d.ip_address)})</option>`).join('');
+    const title = id? '编辑 IP' : '新增 IP';
+    const modal = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal"><div class="modal-header"><h3>${title}</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+            <div class="modal-body">
+                <div class="form-group"><label>IP 地址 *</label><input type="text" class="form-control" id="ip-addr" placeholder="如 10.20.1.10" value="${ip?escapeHtml(ip.address):''}"></div>
+                <div class="form-group"><label>状态</label><select class="form-control" id="ip-status">${STATUS_LIST.map(s=>`<option value="${s}" ${ip&&ip.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+                <div class="form-group"><label>分配类型</label><select class="form-control" id="ip-alloc" onchange="onAllocChange()">${['静态','DHCP'].map(t=>`<option value="${t}" ${ip&&ip.allocation_type===t?'selected':''}>${t}</option>`).join('')}</select></div>
+                <div class="form-group" id="ip-device-group"><label>关联设备（静态地址，可选）</label><select class="form-control" id="ip-device">${devOpts}</select><div style="font-size:12px;color:#999;margin-top:3px;">DHCP 地址无需指定设备，选择 DHCP 后将自动隐藏。也可不在此选择，直接在下方手工录入设备信息。</div></div>
+                <div style="border:1px dashed #d6dbe3;border-radius:8px;padding:10px 12px;margin-bottom:6px;background:#fafbfc;">
+                    <div style="font-size:12px;color:#888;margin-bottom:8px;">📝 手工录入设备信息（无需预先在「设备」中登记）</div>
+                    <div class="form-group"><label>设备名称</label><input type="text" class="form-control" id="ip-device-name" placeholder="如 核心交换机-SW-CORE-01" value="${ip?escapeHtml(ip.device_name||''):''}"></div>
+                    <div class="form-group"><label>设备型号</label><input type="text" class="form-control" id="ip-device-model" placeholder="如 Cisco C2960X-24TS-L" value="${ip?escapeHtml(ip.device_model||''):''}"></div>
+                    <div class="form-group"><label>设备 IP</label><input type="text" class="form-control" id="ip-device-ip" placeholder="一般等于该 IP 地址" value="${ip?escapeHtml(ip.device_ip||''):''}"></div>
+                </div>
+                <div class="form-group"><label>DNS 名称</label><input type="text" class="form-control" id="ip-dns" value="${ip?escapeHtml(ip.dns_name||''):''}"></div>
+                <div class="form-group"><label>描述</label><textarea class="form-control" id="ip-desc" rows="2">${ip?escapeHtml(ip.description||''):''}</textarea></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                <button class="btn btn-primary" onclick="submitIp(${id||'null'})">保存</button>
+            </div></div></div>`;
+    document.getElementById('modalContainer').innerHTML = modal;
+    if(ip && ip.assigned_device_id) document.getElementById('ip-device').value = String(ip.assigned_device_id);
+    onAllocChange();
+}
+function onAllocChange(){
+    const sel = document.getElementById('ip-alloc');
+    if(!sel) return;
+    const t = sel.value;
+    const grp = document.getElementById('ip-device-group');
+    if(grp){
+        if(t==='DHCP'){ grp.style.display='none'; const d=document.getElementById('ip-device'); if(d) d.value=''; }
+        else { grp.style.display=''; }
+    }
+}
+async function submitIp(id){
+    const data = {
+        address: document.getElementById('ip-addr').value.trim(),
+        status: document.getElementById('ip-status').value,
+        allocation_type: document.getElementById('ip-alloc').value,
+        dns_name: document.getElementById('ip-dns').value.trim(),
+        assigned_device_id: parseInt(document.getElementById('ip-device').value)||null,
+        description: document.getElementById('ip-desc').value.trim(),
+        device_name: document.getElementById('ip-device-name').value.trim(),
+        device_model: document.getElementById('ip-device-model').value.trim(),
+        device_ip: document.getElementById('ip-device-ip').value.trim(),
+    };
+    if(!data.address){ showToast('请填写 IP 地址','warning'); return; }
+    try{
+        if(id){ await API.put('/api/ipam/ips/'+id, data); }
+        else { data.prefix_id = currentPrefixId; await API.post('/api/ipam/ips', data); }
+        showToast('已保存','success');
+        document.querySelector('.modal-overlay').remove();
+        loadIps(); loadStats();
+    }catch(e){ showToast('保存失败: '+e.message,'error'); }
+}
+function editIp(id){ openIpModal(id); }
+async function deleteIp(id){
+    if(!confirm('确定删除该 IP 吗？')) return;
+    try{
+        await API.delete('/api/ipam/ips/'+id);
+        showToast('已删除','success');
+        loadIps(); loadStats();
+    }catch(e){ showToast('删除失败: '+e.message,'error'); }
+}
+async function generateIps(){
+    if(!currentPrefixId) return;
+    if(!confirm('将批量生成该网段内所有可用 IP（默认状态「规划」），已存在的会跳过。继续？')) return;
+    try{
+        const res = await API.post('/api/ipam/prefixes/'+currentPrefixId+'/generate', {});
+        showToast(`生成完成：新增 ${res.created} 个，跳过 ${res.skipped} 个`, res.created>0?'success':'info');
+        loadIps(); loadStats();
+    }catch(e){ showToast('生成失败: '+e.message,'error'); }
+}
+function switchToIps(prefixId){
+    switchTab('ips');
+    document.getElementById('ipPrefixFilter').value = String(prefixId);
+    onIpPrefixChange();
+}
+
+// ---------------- 导入 CSV ----------------
+let currentIpamTab = 'overview';
+const IMPORT_META = {
+  aggregates: {
+    endpoint: '/api/ipam/aggregates/import',
+    title: '导入聚合（大子网）',
+    cols: ['名称', '前缀(CIDR)', '规划日期', '描述'],
+    example: '总部大子网,10.20.0.0/16,2026-08,核心网段',
+    note: '必填：名称、前缀(CIDR)。前缀重复自动跳过。',
+  },
+  prefixes: {
+    endpoint: '/api/ipam/prefixes/import',
+    title: '导入网段',
+    cols: ['网段(CIDR)', '聚合(CIDR或名称)', '状态', '用途', 'VLAN', '公司', 'Firewall', 'Zone/Interface Name', '描述'],
+    example: '10.20.1.0/24,10.20.0.0/16,使用中,办公网,10,A公司,,Gi0/1,',
+    note: '必填：网段(CIDR)。聚合列若库中不存在会自动创建（需为合法 CIDR），否则留空。状态默认「规划」。',
+  },
+  ips: {
+    endpoint: '/api/ipam/ips/import',
+    title: '导入 IP 地址',
+    cols: ['网段(CIDR)', 'IP地址', '状态', '分配类型', '关联设备', '设备名称', '设备型号', '设备IP', 'DNS名称', '描述'],
+    example: '10.20.1.0/24,10.20.1.10,使用中,静态,核心交换机-01,SW-CORE-01,Cisco C2960X,10.20.1.10,sw1.office,网关',
+    note: '必填：网段(CIDR)、IP地址。网段若不存在会自动创建（默认规划态）。「关联设备」按设备名称匹配（可留空）；也可直接填「设备名称/设备型号/设备IP」手工录入，无需预先登记设备。分配类型默认「静态」，填 DHCP 则忽略设备。',
+  },
+};
+function openImportModal(){
+  const meta = IMPORT_META[currentIpamTab];
+  if(!meta){ showToast('请先切换到「聚合 / 网段 / IP 地址」页再导入', 'warning'); return; }
+  const modal = `
+    <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+      <div class="modal" style="max-width:700px;">
+        <div class="modal-header"><h3>${meta.title}</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+        <div class="modal-body">
+          <div style="font-size:13px;color:#666;margin-bottom:8px;">${meta.note}</div>
+          <div style="margin-bottom:8px;"><b>列（支持表头自动识别，顺序可乱）：</b> <code>${meta.cols.join(' | ')}</code></div>
+          <div style="margin-bottom:10px;"><button class="btn btn-sm btn-outline" onclick="downloadImportTemplate()">⬇️ 下载模板</button></div>
+          <div class="form-group"><label>选择 CSV 文件</label><input type="file" id="importFile" accept=".csv,text/csv" onchange="handleImportFile(event)" class="form-control"></div>
+          <div class="form-group"><label>或粘贴 CSV 文本（含表头）</label><textarea id="importText" rows="6" class="form-control" placeholder="第一行是表头..."></textarea></div>
+          <div id="importPreview" style="font-size:12px;color:#555;white-space:pre-wrap;background:#f6f8fb;border-radius:6px;padding:8px;max-height:160px;overflow:auto;display:none;"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+          <button class="btn btn-primary" onclick="doImport()">开始导入</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('modalContainer').innerHTML = modal;
+}
+function downloadImportTemplate(){
+  const meta = IMPORT_META[currentIpamTab];
+  const csv = [meta.cols.join(','), meta.example].join('\n');
+  const blob = new Blob(['﻿' + csv], {type: 'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'ipam_' + currentIpamTab + '_template.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+function handleImportFile(e){
+  const f = e.target.files[0];
+  if(!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    document.getElementById('importText').value = reader.result;
+    showImportPreview(reader.result);
+  };
+  reader.readAsText(f, 'utf-8');
+}
+function showImportPreview(text){
+  const el = document.getElementById('importPreview');
+  if(!el) return;
+  const lines = (text || '').split(/\r?\n/).filter(l => l.trim() !== '');
+  el.style.display = 'block';
+  el.textContent = `共 ${Math.max(0, lines.length - 1)} 行数据（不含表头）\n` + lines.slice(0, 8).join('\n') + (lines.length > 8 ? '\n...' : '');
+}
+async function doImport(){
+  const text = document.getElementById('importText').value.trim();
+  if(!text){ showToast('请先选择文件或粘贴 CSV 文本', 'warning'); return; }
+  const meta = IMPORT_META[currentIpamTab];
+  try{
+    const res = await API.post(meta.endpoint, { csv: text });
+    let msg = `导入完成：新增 ${res.created}，跳过 ${res.skipped}`;
+    if(res.created_aggregates && res.created_aggregates.length) msg += `；自动创建聚合 ${res.created_aggregates.length} 个`;
+    if(res.errors && res.errors.length) msg += `；${res.errors.length} 条警告`;
+    showToast(msg, res.created > 0 ? 'success' : 'info');
+    if(res.errors && res.errors.length){
+      const el = document.getElementById('importPreview');
+      if(el){ el.style.display = 'block'; el.textContent = res.errors.slice(0, 30).join('\n'); }
+    } else {
+      document.querySelector('.modal-overlay').remove();
+    }
+    if(currentIpamTab === 'aggregates') loadAggregates();
+    else if(currentIpamTab === 'prefixes') loadPrefixes();
+    else if(currentIpamTab === 'ips'){ loadPrefixOptions(); loadIps(); }
+    loadStats();
+  }catch(e){ showToast('导入失败: ' + e.message, 'error'); }
+}
+
+async function exportIpam(level){
+  try{
+    const res = await fetch('/api/ipam/export/' + level);
+    if(!res.ok) throw new Error('导出失败: HTTP ' + res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename=([^;]+)/);
+    a.download = m ? m[1] : ('ipam_' + level + '.csv');
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast('已导出 ' + level + ' 数据', 'success');
+  }catch(e){ showToast(e.message, 'error'); }
+}
+
+// 初始化
+loadStats();
+</script>
+{% endblock %}

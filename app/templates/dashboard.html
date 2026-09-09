@@ -1,0 +1,497 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>仪表盘</h1>
+    <div>
+        <button class="btn btn-primary" onclick="runAllBackups()">🔄 立即备份全部</button>
+        <button class="btn btn-success" onclick="runAllDiscovery()">🔍 立即发现邻居</button>
+    </div>
+</div>
+
+<!-- Stats Grid -->
+<div class="stats-grid" id="statsGrid">
+    <div class="stat-card">
+        <div class="stat-icon blue">📡</div>
+        <div>
+            <div class="stat-value" id="stat-total">-</div>
+            <div class="stat-label">设备总数</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon green">✅</div>
+        <div>
+            <div class="stat-value" id="stat-online">-</div>
+            <div class="stat-label">在线设备</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon red">❌</div>
+        <div>
+            <div class="stat-value" id="stat-offline">-</div>
+            <div class="stat-label">离线设备</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon orange">💾</div>
+        <div>
+            <div class="stat-value" id="stat-backups-today">-</div>
+            <div class="stat-label">今日备份</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon purple">🌐</div>
+        <div>
+            <div class="stat-value" id="stat-neighbors">-</div>
+            <div class="stat-label">邻居链路</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon teal">⚠️</div>
+        <div>
+            <div class="stat-value" id="stat-changes">-</div>
+            <div class="stat-label">配置变更</div>
+            <a href="/changes" style="font-size:12px;text-decoration:none;">进入变更中心 →</a>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon indigo">🌐</div>
+        <div>
+            <div class="stat-value" id="stat-ipam">-</div>
+            <div class="stat-label">IP 已使用/未使用</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon teal">🗄️</div>
+        <div>
+            <div class="stat-value" id="stat-dc">-</div>
+            <div class="stat-label">机柜总数 / 站点</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon blue">📦</div>
+        <div>
+            <div class="stat-value" id="stat-it">-</div>
+            <div class="stat-label">其他IT资产</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon purple">🖥️</div>
+        <div>
+            <div class="stat-value" id="stat-srv">-</div>
+            <div class="stat-label">服务器/存储</div>
+        </div>
+    </div>
+</div>
+
+<!-- Two column layout -->
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+    <!-- Scheduled task status -->
+    <div class="card">
+        <div class="card-header">
+            定时任务状态
+            <a href="/schedule" style="font-size: 13px; text-decoration: none;">管理任务 →</a>
+        </div>
+        <div class="card-body">
+            <div id="schedStatusList">
+                <div class="empty-state">加载中...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Tasks -->
+    <div class="card">
+        <div class="card-header">
+            最近任务
+            <a href="/backups" style="font-size: 13px; text-decoration: none;">查看全部 →</a>
+        </div>
+        <div class="card-body">
+            <div id="recentTasks" class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>任务类型</th>
+                            <th>状态</th>
+                            <th>成功/失败</th>
+                            <th>时间</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recentTasksBody">
+                        <tr><td colspan="4" class="empty-state">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Device Groups -->
+    <div class="card">
+        <div class="card-header">设备分组</div>
+        <div class="card-body">
+            <div id="groupsList">
+                <div class="empty-state">加载中...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- IPAM 地址利用率 -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        🌐 IP 地址规划利用率
+        <a href="/ipam" style="font-size: 13px; text-decoration: none;">管理 IP 规划 →</a>
+    </div>
+    <div class="card-body">
+        <div id="ipamUtilSummary" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;"></div>
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>网段 (CIDR)</th>
+                        <th>状态</th>
+                        <th>用途</th>
+                        <th>总/可用</th>
+                        <th>已使用</th>
+                        <th>未使用</th>
+                        <th style="min-width:160px;">利用率</th>
+                    </tr>
+                </thead>
+                <tbody id="ipamUtilBody">
+                    <tr><td colspan="7" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Device Summary -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        设备概览
+        <a href="/devices" style="font-size: 13px; text-decoration: none;">管理设备 →</a>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>设备名称</th>
+                        <th>IP地址</th>
+                        <th>类型</th>
+                        <th>型号</th>
+                        <th>序列号</th>
+                        <th>生产日期</th>
+                        <th>状态</th>
+                        <th>最后备份</th>
+                    </tr>
+                </thead>
+                <tbody id="deviceSummaryBody">
+                    <tr><td colspan="8" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Data Center overview -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        🗄️ 数据中心概览
+        <a href="/datacenter" style="font-size: 13px; text-decoration: none;">管理机柜 →</a>
+    </div>
+    <div class="card-body">
+        <div id="dcSummaryChips" style="display:flex;gap:10px;flex-wrap:wrap;"></div>
+        <div class="table-container" style="margin-top:12px;">
+            <table class="data-table">
+                <thead>
+                    <tr><th>站点</th><th>机柜数</th><th>在用</th><th>规划中</th><th>预留</th><th>停用</th></tr>
+                </thead>
+                <tbody id="dcSiteBody">
+                    <tr><td colspan="6" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Asset overview -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        📦 资产概览
+        <a href="/assets" style="font-size: 13px; text-decoration: none;">其他资产 →</a>
+        <a href="/servers" style="font-size: 13px; text-decoration: none; margin-left:8px;">服务器存储 →</a>
+    </div>
+    <div class="card-body">
+        <div id="assetSummaryChips" style="display:flex;gap:10px;flex-wrap:wrap;"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadDashboard() {
+    try {
+        const data = await API.get('/api/dashboard');
+        document.getElementById('stat-total').textContent = data.total_devices;
+        document.getElementById('stat-online').textContent = data.online_devices;
+        document.getElementById('stat-offline').textContent = data.offline_devices + data.unknown_devices;
+        document.getElementById('stat-backups-today').textContent = data.backups_today;
+        document.getElementById('stat-neighbors').textContent = data.total_neighbors;
+        document.getElementById('stat-changes').textContent = data.devices_with_changes;
+
+        // Recent tasks
+        const tasksBody = document.getElementById('recentTasksBody');
+        if (data.recent_tasks && data.recent_tasks.length > 0) {
+            tasksBody.innerHTML = data.recent_tasks.map(t => `
+                <tr>
+                    <td>${escapeHtml(taskTypeLabel(t.task_type))}</td>
+                    <td>${statusBadge(t.status)}</td>
+                    <td>${t.success_count}/${t.failed_count}</td>
+                    <td>${formatRelative(t.started_at)}</td>
+                </tr>
+            `).join('');
+        } else {
+            tasksBody.innerHTML = '<tr><td colspan="4" class="empty-state">暂无任务记录</td></tr>';
+        }
+
+        // Groups
+        const groupsList = document.getElementById('groupsList');
+        if (data.groups && data.groups.length > 0) {
+            groupsList.innerHTML = data.groups.map(g => `
+                <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee;">
+                    <span>${escapeHtml(g.name)}</span>
+                    <span class="badge badge-primary">${g.device_count} 台</span>
+                </div>
+            `).join('');
+        } else {
+            groupsList.innerHTML = '<div class="empty-state">暂无分组</div>';
+        }
+
+        // Device type distribution
+        if (data.device_type_distribution) {
+            // Could add a chart here
+        }
+
+        // Scheduled task status
+        const schedList = document.getElementById('schedStatusList');
+        if (data.schedules && data.schedules.length > 0) {
+            schedList.innerHTML = data.schedules.map(s => {
+                const statusBadgeHtml = s.is_running
+                    ? '<span class="badge badge-info">● 运行中</span>'
+                    : (s.is_enabled
+                        ? (s.last_status ? statusBadge(s.last_status) : '<span class="badge badge-success">就绪</span>')
+                        : '<span class="badge badge-secondary">已停用</span>');
+                return `
+                <div style="padding: 10px 0; border-bottom: 1px solid #eee; display:flex; justify-content: space-between; align-items:center; gap: 12px;">
+                    <div>
+                        <div><strong>${escapeHtml(s.description || taskTypeLabel(s.task_type))}</strong>
+                            <span style="color:#888; font-size:12px;">${cronHint(s.cron_expression)} · <code>${escapeHtml(s.cron_expression)}</code></span></div>
+                        <div style="color:#888; font-size:12px;">下次: ${s.next_run ? formatRelative(s.next_run) : (s.is_enabled ? '—' : '已停用')} · 上次: ${s.last_run ? formatRelative(s.last_run) : '从未'}</div>
+                    </div>
+                    <div style="display:flex; gap:6px; align-items:center;">
+                        ${statusBadgeHtml}
+                        <button class="btn btn-sm btn-primary" onclick="runDashboardTask(${s.id})">执行</button>
+                    </div>
+                </div>`;
+            }).join('');
+        } else {
+            schedList.innerHTML = '<div class="empty-state">暂无定时任务，<a href="/schedule">去创建 →</a></div>';
+        }
+    } catch (e) {
+        showToast('加载仪表盘失败: ' + e.message, 'error');
+    }
+}
+
+async function loadDeviceSummary() {
+    try {
+        const data = await API.get('/api/dashboard/device-summary');
+        const body = document.getElementById('deviceSummaryBody');
+        if (data && data.length > 0) {
+            body.innerHTML = data.slice(0, 15).map(d => `
+                <tr style="cursor: pointer;" onclick="window.location='/devices/${d.id}'">
+                    <td><strong>${escapeHtml(d.name)}</strong></td>
+                    <td>${escapeHtml(d.ip_address)}</td>
+                    <td>${deviceTypeLabel(d.device_type)}</td>
+                    <td>${escapeHtml(d.model || '-')}</td>
+                    <td>${escapeHtml(d.serial_number || '-')}</td>
+                    <td>${escapeHtml(d.production_date || '-')}</td>
+                    <td>${statusBadge(d.status)}</td>
+                    <td>${formatRelative(d.last_backup)}</td>
+                </tr>
+            `).join('');
+        } else {
+            body.innerHTML = '<tr><td colspan="8" class="empty-state">📡 暂无设备，请先添加设备</td></tr>';
+        }
+    } catch (e) {
+        console.error('Failed to load device summary:', e);
+    }
+}
+
+function ipamStatusBadge(s) {
+    const map = {
+        '规划':'<span class="badge badge-info">规划</span>',
+        '预分配':'<span class="badge badge-warning">预分配</span>',
+        '使用中':'<span class="badge badge-success">使用中</span>',
+        '已停用':'<span class="badge badge-secondary">已停用</span>',
+    };
+    return map[s] || `<span class="badge badge-secondary">${escapeHtml(s||'')}</span>`;
+}
+
+async function loadIpamUtilization() {
+    try {
+        const data = await API.get('/api/ipam/prefix-utilization');
+        const o = data.overall || {};
+        document.getElementById('stat-ipam').textContent = (o.allocated_ips||0) + ' / ' + (o.unused_ips||0);
+        const summary = [
+            {label:'可用地址总数', value:o.usable_ips||0, color:'#3b82f6'},
+            {label:'已使用(已分配)', value:o.allocated_ips||0, color:'#22c55e'},
+            {label:'未使用', value:o.unused_ips||0, color:'#9ca3af'},
+            {label:'平均利用率', value:(o.utilization||0)+'%', color:'#f59e0b'},
+        ];
+        document.getElementById('ipamUtilSummary').innerHTML = summary.map(s=>`
+            <div style="flex:1;min-width:150px;background:#f6f8fb;border:1px solid #e6eaf0;border-radius:8px;padding:10px 12px;">
+                <div style="font-size:12px;color:#888;">${s.label}</div>
+                <div style="font-size:20px;font-weight:700;color:${s.color};">${s.value}</div>
+            </div>`).join('');
+        const rows = data.prefixes||[];
+        const body = document.getElementById('ipamUtilBody');
+        if(rows.length===0){
+            body.innerHTML = '<tr><td colspan="7" class="empty-state">📡 暂无网段数据，请到「IP 地址规划」中添加聚合与网段</td></tr>';
+            return;
+        }
+        body.innerHTML = rows.map(r=>{
+            const util = r.utilization||0;
+            const barColor = util>=90?'#ef4444':(util>=70?'#f59e0b':'#22c55e');
+            return `
+            <tr>
+                <td><code>${escapeHtml(r.prefix)}</code></td>
+                <td>${ipamStatusBadge(r.status)}</td>
+                <td>${escapeHtml(r.role||'-')}</td>
+                <td>${r.total_ips} / ${r.usable_ips}</td>
+                <td><b>${r.allocated_ips}</b></td>
+                <td>${r.unused_ips}</td>
+                <td>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <div style="flex:1;height:8px;background:#eee;border-radius:4px;overflow:hidden;">
+                            <div style="width:${Math.min(util,100)}%;height:100%;background:${barColor};"></div>
+                        </div>
+                        <span style="font-size:12px;color:#666;min-width:42px;text-align:right;">${util}%</span>
+                    </div>
+                </td>
+            </tr>`;
+        }).join('');
+    } catch(e) {
+        console.error('加载 IP 利用率失败:', e);
+    }
+}
+
+function taskTypeLabel(type) {
+    const map = { 'backup': '配置备份', 'discovery': '邻居发现', 'info': '数据采集', 'topology': '拓扑更新' };
+    return map[type] || String(type || '');
+}
+
+function cronHint(cron) {
+    const map = {'0 2 * * *':'每天 02:00','0 3 * * *':'每天 03:00','0 4 * * 1':'每周一 04:00','*/30 * * * *':'每 30 分钟','0 */1 * * *':'每小时','0 0 * * 0':'每周日 00:00'};
+    return map[cron] || '自定义';
+}
+
+async function runDashboardTask(id) {
+    if (!confirm('立即执行该定时任务？将对其覆盖的所有已启用设备运行。')) return;
+    showLoading();
+    try {
+        const r = await API.post(`/api/schedule/${id}/run`);
+        showToast('已触发 ' + (r.task_type || 'task') + ' 任务，请稍后刷新查看状态', 'success');
+        setTimeout(loadDashboard, 1500);
+    } catch (e) { showToast('触发失败: ' + e.message, 'error'); }
+    finally { hideLoading(); }
+}
+
+async function runAllBackups() {
+    if (!confirm('确定要立即备份所有设备配置吗？')) return;
+    showLoading();
+    try {
+        const result = await API.post('/api/backups/run-all');
+        showToast(`备份完成: 成功 ${result.success_count}, 失败 ${result.failed_count}`, result.failed_count > 0 ? 'warning' : 'success');
+        loadDashboard();
+    } catch (e) {
+        showToast('备份失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+async function runAllDiscovery() {
+    if (!confirm('确定要立即执行所有设备的邻居发现吗？')) return;
+    showLoading();
+    try {
+        const result = await API.post('/api/topology/discover');
+        showToast(`发现完成: 成功 ${result.success_count}, 失败 ${result.failed_count}`, result.failed_count > 0 ? 'warning' : 'success');
+        loadDashboard();
+    } catch (e) {
+        showToast('发现失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+loadDashboard();
+loadDeviceSummary();
+loadIpamUtilization();
+loadDcSummary();
+loadAssetSummary();
+
+async function loadDcSummary() {
+    try {
+        const s = await API.get('/api/dc/summary');
+        document.getElementById('stat-dc').textContent = s.racks_count + ' / ' + s.sites_count;
+        const chips = [
+            {label:'站点', value:s.sites_count, color:'#2196f3'},
+            {label:'机柜总数', value:s.racks_count, color:'#009688'},
+            {label:'在用', value:s.racks_by_status['在用']||0, color:'#22c55e'},
+            {label:'规划中', value:s.racks_by_status['规划中']||0, color:'#0ea5e9'},
+            {label:'预留', value:s.racks_by_status['预留']||0, color:'#f59e0b'},
+            {label:'停用', value:s.racks_by_status['停用']||0, color:'#9ca3af'},
+        ];
+        document.getElementById('dcSummaryChips').innerHTML = chips.map(c=>`
+            <div style="flex:1;min-width:120px;background:#f6f8fb;border:1px solid #e6eaf0;border-radius:8px;padding:10px 12px;">
+                <div style="font-size:12px;color:#888;">${c.label}</div>
+                <div style="font-size:20px;font-weight:700;color:${c.color};">${c.value}</div>
+            </div>`).join('');
+        // 按站点聚合展示
+        const sites = await API.get('/api/dc/sites');
+        const body = document.getElementById('dcSiteBody');
+        if (sites.length === 0) {
+            body.innerHTML = '<tr><td colspan="6" class="empty-state">🗄️ 暂无数据中心数据，点击「管理机柜」开始录入</td></tr>';
+        } else {
+            body.innerHTML = sites.map(site => `
+                <tr>
+                    <td><strong>${escapeHtml(site.name)}</strong> <span style="color:#888;font-size:12px;">${escapeHtml(site.region||'')}</span></td>
+                    <td>${site.rack_count}</td>
+                    <td colspan="4" style="color:#888;">站点内机柜状态汇总请进入「数据中心」页查看</td>
+                </tr>`).join('');
+        }
+    } catch (e) { console.error('加载数据中心概览失败:', e); }
+}
+
+async function loadAssetSummary() {
+    try {
+        const s = await API.get('/api/assets/summary');
+        document.getElementById('stat-it').textContent = s.it_count;
+        document.getElementById('stat-srv').textContent = s.server_count;
+        const chips = [{label:'IT资产', value:s.it_count, color:'#3b82f6'}];
+        for (const [t, c] of Object.entries(s.it_by_type || {})) {
+            chips.push({label:t, value:c, color:'#0ea5e9'});
+        }
+        for (const [cat, c] of Object.entries(s.server_by_category || {})) {
+            let hue = 0;
+            for (let i = 0; i < cat.length; i++) hue = (hue * 31 + cat.charCodeAt(i)) % 360;
+            chips.push({label:cat, value:c, color:`hsl(${hue}, 62%, 52%)`});
+        }
+        document.getElementById('assetSummaryChips').innerHTML = chips.map(c => `
+            <div style="flex:1;min-width:120px;background:#f6f8fb;border:1px solid #e6eaf0;border-radius:8px;padding:10px 12px;">
+                <div style="font-size:12px;color:#888;">${escapeHtml(c.label)}</div>
+                <div style="font-size:20px;font-weight:700;color:${c.color};">${c.value}</div>
+            </div>`).join('');
+    } catch (e) { console.error('加载资产概览失败:', e); }
+}
+</script>
+{% endblock %}

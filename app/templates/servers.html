@@ -1,0 +1,506 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>🖥️ 服务器存储</h1>
+    <div>
+        <button class="btn btn-outline" onclick="showCategoryManage()">⚙ 管理类别</button>
+        <button class="btn btn-primary" onclick="showAddServerModal()">＋ 新增服务器/存储</button>
+    </div>
+</div>
+
+<!-- Summary stats -->
+<div class="stats-grid" id="srvStatsGrid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">
+    <div class="stat-card">
+        <div class="stat-icon indigo">🖥️</div>
+        <div><div class="stat-value" id="srv-total">-</div><div class="stat-label">服务器/存储总数</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon green">✅</div>
+        <div><div class="stat-value" id="srv-active">-</div><div class="stat-label">在用</div></div>
+    </div>
+    <div id="srvCatCards" style="display:contents;"></div>
+</div>
+
+<!-- Filters + table -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        🖥️ 服务器 / 存储列表
+        <span style="font-size: 13px; font-weight: normal;">
+            <select class="form-control" id="filterRack" onchange="loadServers()" style="display:inline-block;width:auto;">
+                <option value="">全部机柜</option>
+            </select>
+            <select class="form-control" id="filterCategory" onchange="loadServers()" style="display:inline-block;width:auto;">
+                <option value="">全部类别</option>
+                <option value="服务器">服务器</option>
+                <option value="存储">存储</option>
+            </select>
+            <select class="form-control" id="filterStatus" onchange="loadServers()" style="display:inline-block;width:auto;">
+                <option value="">全部状态</option>
+                <option value="在用">在用</option>
+                <option value="备用">备用</option>
+                <option value="停用">停用</option>
+                <option value="报废">报废</option>
+            </select>
+            <input type="text" class="form-control" id="filterSearch" placeholder="搜索名称/品牌/型号/负责人..." oninput="loadServers()" style="display:inline-block;width:auto;min-width:200px;">
+        </span>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>名称</th>
+                        <th>类别</th>
+                        <th>品牌 / 型号</th>
+                        <th>机柜</th>
+                        <th>站点</th>
+                        <th>U 位</th>
+                        <th>状态</th>
+                        <th style="min-width: 130px;">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="serverBody">
+                    <tr><td colspan="8" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Rack U-position view -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        🎛️ 机柜 U 位视图
+        <select class="form-control" id="viewRack" onchange="loadRackUView()" style="display:inline-block;width:auto;"></select>
+    </div>
+    <div class="card-body">
+        <div id="rackUView"><div class="empty-state">加载中...</div></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SERVER_CATEGORIES_FALLBACK = ["服务器", "存储"];
+let SERVER_CATEGORIES = SERVER_CATEGORIES_FALLBACK.slice();
+let CATEGORY_COLORS = {};
+const ASSET_STATUSES = ["在用", "备用", "停用", "报废"];
+
+// 类别颜色：优先用用户自定义颜色，否则按名称生成稳定色
+function catColor(name) {
+    name = name || '未分类';
+    if (CATEGORY_COLORS[name]) return CATEGORY_COLORS[name];
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+    return `hsl(${h}, 62%, 52%)`;
+}
+function catBadge(cat) {
+    cat = cat || '未分类';
+    const col = catColor(cat);
+    return `<span class="badge" style="background:${col}1f;color:${col};border:1px solid ${col}55;">${escapeHtml(cat)}</span>`;
+}
+function catOptionsHTML(selected) {
+    selected = selected || '服务器';
+    return SERVER_CATEGORIES.map(x => `<option value="${escapeHtml(x)}" ${x === selected ? 'selected' : ''}>${escapeHtml(x)}</option>`).join('');
+}
+
+// 从后端加载可维护的类别列表，并刷新筛选下拉
+async function loadCategories() {
+    try {
+        const cats = await API.get('/api/assets/server-categories');
+        SERVER_CATEGORIES = cats.map(c => c.name);
+        CATEGORY_COLORS = {};
+        cats.forEach(c => { if (c.color) CATEGORY_COLORS[c.name] = c.color; });
+        const sel = document.getElementById('filterCategory');
+        const cur = sel ? sel.value : '';
+        if (sel) {
+            sel.innerHTML = '<option value="">全部类别</option>' + SERVER_CATEGORIES.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
+            sel.value = cur;
+        }
+    } catch (e) { console.error(e); }
+}
+
+async function promptAddCategory() {
+    const name = prompt('输入新类别名称：');
+    if (!name) return;
+    const nm = name.trim();
+    if (!nm) return;
+    try {
+        await API.post('/api/assets/server-categories', { name: nm });
+        showToast('已新增类别', 'success');
+        await loadCategories();
+        const sel = document.getElementById('srv-cat');
+        if (sel) sel.value = nm;
+    } catch (e) { showToast('新增类别失败: ' + e.message, 'error'); }
+}
+
+async function showCategoryManage() {
+    let cats = [];
+    try { cats = await API.get('/api/assets/server-categories'); } catch (e) {}
+    const rows = cats.map(c => `
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+            <input type="text" class="form-control" id="cat-name-${c.id}" value="${escapeHtml(c.name)}" style="flex:1;">
+            <input type="color" class="form-control" id="cat-color-${c.id}" value="${c.color || '#3b82f6'}" style="width:48px;padding:2px;height:38px;">
+            <button class="btn btn-sm btn-outline" onclick="renameCategory(${c.id})">保存</button>
+            <button class="btn btn-sm btn-danger" onclick="removeCategory(${c.id})">删除</button>
+        </div>`).join('');
+    document.getElementById('modalContainer').innerHTML = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal" style="max-width:580px;"><div class="modal-header"><h3>管理类别</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+            <div class="modal-body">
+                <div style="display:flex;gap:8px;margin-bottom:14px;">
+                    <input type="text" class="form-control" id="new-cat-name" placeholder="新类别名称" style="flex:1;">
+                    <button class="btn btn-primary" onclick="addCategoryFromManage()">＋ 新增</button>
+                </div>
+                <div id="catManageList">${rows || '<div class="empty-state">暂无类别</div>'}</div>
+                <div style="color:#888;font-size:12px;margin-top:6px;">提示：类别被资产引用时不能直接删除，需先在资产中改换类别。</div>
+            </div>
+            <div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">关闭</button></div>
+            </div></div>`;
+}
+async function addCategoryFromManage() {
+    const nm = (document.getElementById('new-cat-name').value || '').trim();
+    if (!nm) return;
+    try { await API.post('/api/assets/server-categories', { name: nm }); showToast('已新增', 'success'); await loadCategories(); showCategoryManage(); }
+    catch (e) { showToast('失败: ' + e.message, 'error'); }
+}
+async function renameCategory(id) {
+    const nm = (document.getElementById('cat-name-' + id).value || '').trim();
+    const col = document.getElementById('cat-color-' + id).value;
+    if (!nm) return;
+    try { await API.put('/api/assets/server-categories/' + id, { name: nm, color: col }); showToast('已保存', 'success'); await loadCategories(); showCategoryManage(); }
+    catch (e) { showToast('失败: ' + e.message, 'error'); }
+}
+async function removeCategory(id) {
+    if (!confirm('确定删除该类别？')) return;
+    try { await API.delete('/api/assets/server-categories/' + id); showToast('已删除', 'success'); await loadCategories(); showCategoryManage(); }
+    catch (e) { showToast('删除失败: ' + e.message, 'error'); }
+}
+
+let RACKS = [];
+
+function assetStatusBadge(s) {
+    const map = {
+        '在用':'<span class="badge badge-success">在用</span>',
+        '备用':'<span class="badge badge-info">备用</span>',
+        '停用':'<span class="badge badge-warning">停用</span>',
+        '报废':'<span class="badge badge-secondary">报废</span>',
+    };
+    return map[s] || `<span class="badge badge-secondary">${escapeHtml(s||'')}</span>`;
+}
+
+async function loadRacks() {
+    try {
+        RACKS = await API.get('/api/dc/racks');
+        const opts = '<option value="">全部机柜</option>' + RACKS.map(r => `<option value="${r.id}">${escapeHtml((r.site_name||'')+' / '+r.rack_number)}</option>`).join('');
+        document.getElementById('filterRack').innerHTML = opts;
+        document.getElementById('viewRack').innerHTML = '<option value="">选择机柜查看 U 位...</option>' + RACKS.map(r => `<option value="${r.id}">${escapeHtml((r.site_name||'')+' / '+r.rack_number)}</option>`).join('');
+    } catch (e) { console.error(e); }
+}
+
+async function loadSummary() {
+    try {
+        const s = await API.get('/api/assets/summary');
+        document.getElementById('srv-total').textContent = s.server_count;
+        const all = await API.get('/api/assets/servers');
+        document.getElementById('srv-active').textContent = all.filter(x => x.status === '在用').length;
+        // 按类别动态展示统计卡片
+        const cc = document.getElementById('srvCatCards');
+        if (cc) {
+            cc.innerHTML = Object.entries(s.server_by_category || {}).map(([cat, c]) => {
+                const col = catColor(cat);
+                return `<div class="stat-card">
+                    <div class="stat-icon" style="background:${col}1f;color:${col};">🏷️</div>
+                    <div><div class="stat-value" style="color:${col};">${c}</div><div class="stat-label">${escapeHtml(cat)}</div></div>
+                </div>`;
+            }).join('');
+        }
+    } catch (e) { console.error(e); }
+}
+
+async function loadServers() {
+    try {
+        const params = new URLSearchParams();
+        const rack = document.getElementById('filterRack').value;
+        const cat = document.getElementById('filterCategory').value;
+        const status = document.getElementById('filterStatus').value;
+        const search = document.getElementById('filterSearch').value.trim();
+        if (rack) params.set('rack_id', rack);
+        if (cat) params.set('category', cat);
+        if (status) params.set('status', status);
+        if (search) params.set('search', search);
+        const items = await API.get('/api/assets/servers?' + params.toString());
+        const body = document.getElementById('serverBody');
+        if (items.length === 0) {
+            body.innerHTML = '<tr><td colspan="8" class="empty-state">🖥️ 暂无服务器/存储，点击右上角「新增」录入</td></tr>';
+            return;
+        }
+        body.innerHTML = items.map(s => `
+            <tr>
+                <td><strong>${escapeHtml(s.name)}</strong></td>
+                <td>${catBadge(s.category)}</td>
+                <td>${escapeHtml(s.brand||'-')}<br><span style="color:#888;font-size:12px;">${escapeHtml(s.model||'')}</span></td>
+                <td>${escapeHtml(s.rack_number||'-')}</td>
+                <td>${escapeHtml(s.site_name||'-')}</td>
+                <td>${renderServerIps(s)}</td>
+                <td><b>U${s.u_start}</b> ~ U${s.u_start + (s.u_size||1) - 1}<br><span style="color:#888;font-size:12px;">占 ${s.u_size}U</span></td>
+                <td>${assetStatusBadge(s.status)}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline" onclick="editServer(${s.id})">编辑</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteServer(${s.id})">删除</button>
+                </td>
+            </tr>`).join('');
+    } catch (e) {
+        showToast('加载失败: ' + e.message, 'error');
+    }
+}
+
+function renderServerIps(s) {
+    const extras = (s.additional_ips || []).map(x => x.ip_address);
+    if (!extras.length) return `<code>${escapeHtml(s.management_ip || '-')}</code>`;
+    return `<code>${escapeHtml(s.management_ip || '')}</code> ` +
+           `<span class="badge badge-secondary">+${extras.length}</span>`;
+}
+
+function collectServerExtraIps() {
+    const out = [];
+    for (let i = 2; i <= 10; i++) {
+        const el = document.getElementById(`srv-ip${i}`);
+        if (el && el.value.trim()) out.push(el.value.trim());
+    }
+    return out;
+}
+
+// 渲染单个机柜的 U 位视图（叠加服务器/存储占用）
+function rackUHTML(rack, servers) {
+    const u = Math.max(1, rack.u_height || 1);
+    const occ = new Array(u + 1).fill(null);
+    (servers || []).forEach(s => {
+        const lo = s.u_start || 1;
+        const hi = lo + (s.u_size || 1) - 1;
+        for (let i = lo; i <= hi && i <= u; i++) occ[i] = s;
+    });
+    const barH = Math.min(u * 7, 320);
+    const cellH = barH / u;
+    let cells = '', labels = '';
+    for (let i = u; i >= 1; i--) {
+        const s = occ[i];
+        if (s) {
+            const c = catColor(s.category);
+            cells += `<div style="height:${cellH}px;background:linear-gradient(${c},${c}cc);border:1px solid ${c};border-radius:3px;margin:1px 0;color:#fff;font-size:10px;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:0 2px;" title="${escapeHtml(s.name)} (U${i})">${escapeHtml(s.name)}</div>`;
+        } else {
+            cells += `<div style="height:${cellH}px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:3px;margin:1px 0;"></div>`;
+        }
+        labels += `<div style="height:${cellH}px;font-size:9px;color:#94a3b8;display:flex;align-items:center;justify-content:flex-end;padding-right:3px;">U${i}</div>`;
+    }
+    return `
+    <div style="width:180px;border:1px solid #e6eaf0;border-radius:10px;padding:10px;text-align:center;background:#fff;">
+        <div style="font-weight:700;">${escapeHtml(rack.rack_number||'')}</div>
+        <div style="color:#888;font-size:12px;margin-bottom:6px;height:16px;overflow:hidden;">${escapeHtml(rack.name||'')}</div>
+        <div style="display:flex;justify-content:center;">
+            <div style="width:24px;">${labels}</div>
+            <div style="width:120px;">${cells}</div>
+        </div>
+        <div style="margin-top:6px;font-size:11px;color:#666;">${u}U · ${escapeHtml(rack.site_name||'')}</div>
+    </div>`;
+}
+
+async function loadRackUView() {
+    const target = document.getElementById('rackUView');
+    const rid = document.getElementById('viewRack').value;
+    if (!rid) { target.innerHTML = '<div class="empty-state">请选择机柜查看 U 位占用</div>'; return; }
+    try {
+        const rack = RACKS.find(r => String(r.id) === String(rid));
+        if (!rack) { target.innerHTML = '<div class="empty-state">机柜不存在</div>'; return; }
+        const servers = await API.get('/api/assets/servers?rack_id=' + rid);
+        target.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:18px;">${rackUHTML(rack, servers)}<div style="align-self:center;color:#888;font-size:12px;max-width:200px;">蓝色=服务器，紫色=存储。每格为一个 U 位，标注名称即代表该 U 被占用。</div></div>`;
+    } catch (e) {
+        target.innerHTML = '<div class="empty-state">加载失败</div>';
+    }
+}
+
+// ---------- Server modal ----------
+function serverModalHTML(title, s) {
+    s = s || {};
+    const extras = (s.additional_ips || []).map(x => x.ip_address);
+    const rackOpts = RACKS.map(r => `<option value="${r.id}" ${s.rack_id===r.id?'selected':''}>${escapeHtml((r.site_name||'')+' / '+r.rack_number)}</option>`).join('');
+    const catOpts = catOptionsHTML(s.category);
+    const statusOpts = ASSET_STATUSES.map(x => `<option value="${x}" ${(s.status||'在用')===x?'selected':''}>${x}</option>`).join('');
+    return `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal" style="max-width:680px;"><div class="modal-header"><h3>${title}</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+            <div class="modal-body">
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>名称 *</label><input type="text" class="form-control" id="srv-name" value="${escapeHtml(s.name||'')}" placeholder="如 SRV-DB-01"></div>
+                    <div class="form-group" style="flex:1;"><label>类别</label><div style="display:flex;gap:6px;"><select class="form-control" id="srv-cat">${catOpts}</select><button type="button" class="btn btn-outline btn-sm" title="新增类别" onclick="promptAddCategory()">＋</button></div></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>品牌</label><input type="text" class="form-control" id="srv-brand" value="${escapeHtml(s.brand||'')}"></div>
+                    <div class="form-group" style="flex:1;"><label>型号</label><input type="text" class="form-control" id="srv-model" value="${escapeHtml(s.model||'')}"></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1.4;"><label>关联机柜 *</label><select class="form-control" id="srv-rack" onchange="prefillServerU()">${rackOpts || '<option value="">（请先新增机柜）</option>'}</select></div>
+                    <div class="form-group" style="flex:1;"><label>起始 U</label><input type="number" class="form-control" id="srv-ustart" value="${s.u_start||1}" min="1"></div>
+                    <div class="form-group" style="flex:1;"><label>占用 U 数</label><input type="number" class="form-control" id="srv-usize" value="${s.u_size||1}" min="1"></div>
+                    <div class="form-group" style="flex:1;"><label>状态</label><select class="form-control" id="srv-status">${statusOpts}</select></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>序列号</label><input type="text" class="form-control" id="srv-serial" value="${escapeHtml(s.serial||'')}"></div>
+                    <div class="form-group" style="flex:1;"><label>资产编号</label><input type="text" class="form-control" id="srv-asset" value="${escapeHtml(s.asset_tag||'')}"></div>
+                    <div class="form-group" style="flex:1;"><label>管理 IP</label><input type="text" class="form-control" id="srv-ip" value="${escapeHtml(s.management_ip||'')}"></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>额外 IP（多网卡）</label><input type="text" class="form-control" id="srv-ip2" value="${escapeHtml(extras[0]||'')}" placeholder="额外 IP 2（可选）"></div>
+                    <div class="form-group" style="flex:1;"><label>&nbsp;</label><input type="text" class="form-control" id="srv-ip3" value="${escapeHtml(extras[1]||'')}" placeholder="额外 IP 3（可选）"></div>
+                    <div class="form-group" style="flex:1;"><label>&nbsp;</label><input type="text" class="form-control" id="srv-ip4" value="${escapeHtml(extras[2]||'')}" placeholder="额外 IP 4（可选）"></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>操作系统</label><input type="text" class="form-control" id="srv-os" value="${escapeHtml(s.os||'')}"></div>
+                    <div class="form-group" style="flex:1;"><label>负责人</label><input type="text" class="form-control" id="srv-owner" value="${escapeHtml(s.owner||'')}"></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>CPU</label><input type="text" class="form-control" id="srv-cpu" value="${escapeHtml(s.cpu||'')}"></div>
+                    <div class="form-group" style="flex:1;"><label>内存</label><input type="text" class="form-control" id="srv-mem" value="${escapeHtml(s.memory||'')}"></div>
+                </div>
+                <div class="form-group"><label>存储说明</label><input type="text" class="form-control" id="srv-storage-desc" value="${escapeHtml(s.storage_desc||'')}" placeholder="如 2x480G SSD + 4x4T SATA"></div>
+                <div class="form-group"><label>备注</label><textarea class="form-control" id="srv-notes" rows="2">${escapeHtml(s.notes||'')}</textarea></div>
+                <div class="form-group"><label style="color:#888;font-size:12px;">提示：U 位会自动校验不越界、且与同机柜其他设备不重叠。</label></div>
+                <div class="form-group"><span id="srv-uwarn" style="color:#dc2626;font-size:12px;font-weight:600;"></span></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                <button class="btn btn-primary" onclick="${s.id ? 'submitEditServer('+s.id+')' : 'submitAddServer()'}">保存</button>
+            </div></div></div>`;
+}
+
+async function showAddServerModal() {
+    if (RACKS.length === 0) { showToast('请先在「数据中心」新增机柜', 'warning'); return; }
+    // 自动选择第一个仍有空位的机柜作为默认，避免默认机柜已满导致「无法保存」
+    let chosen = RACKS[0].id;
+    for (const r of RACKS) {
+        const free = await nextFreeU(r.id);
+        if (free > 0) { chosen = r.id; break; }
+    }
+    document.getElementById('modalContainer').innerHTML = serverModalHTML('新增服务器/存储', { rack_id: chosen });
+    await prefillServerU();
+}
+
+// 计算指定机柜中第一个空闲 U 位（避开已占用区间），作为新增服务器的默认起始 U
+async function nextFreeU(rackId) {
+    if (!rackId) return 1;
+    const rack = RACKS.find(r => String(r.id) === String(rackId));
+    const uHeight = (rack && rack.u_height) ? rack.u_height : 42;
+    const usizeEl = document.getElementById('srv-usize');
+    const size = usizeEl ? (parseInt(usizeEl.value, 10) || 1) : 1;
+    let servers = [];
+    try {
+        servers = await API.get('/api/assets/servers?rack_id=' + rackId);
+    } catch (e) { servers = []; }
+    const occupied = new Set();
+    (servers || []).forEach(s => {
+        const start = s.u_start || 1;
+        const sz = s.u_size || 1;
+        for (let u = start; u < start + sz; u++) occupied.add(u);
+    });
+    for (let u = 1; u + size - 1 <= uHeight; u++) {
+        let ok = true;
+        for (let k = u; k < u + size; k++) {
+            if (occupied.has(k)) { ok = false; break; }
+        }
+        if (ok) return u;
+    }
+    return 0; // 机柜已满，返回 0 作为「无空位」标志（提交时仍会校验重叠）
+}
+
+// 新增服务器时，把起始 U 预填为所选机柜的下一个空闲 U，避免默认 U1 与已有设备重叠导致「无法保存」
+async function prefillServerU() {
+    const sel = document.getElementById('srv-rack');
+    if (!sel) return;
+    const rackId = sel.value;
+    const u = await nextFreeU(rackId);
+    const ustart = document.getElementById('srv-ustart');
+    const warn = document.getElementById('srv-uwarn');
+    if (!ustart) return;
+    if (u > 0) {
+        ustart.value = u;
+        if (warn) warn.textContent = '';
+    } else {
+        // 机柜已满：提示用户，起始 U 退回 U1（提交时若重叠会被后台拦截并提示具体原因）
+        if (warn) warn.textContent = '⚠️ 该机柜已无空余 U 位，请选择其他机柜或减小占用 U 数';
+        ustart.value = 1;
+    }
+}
+
+function collectServer() {
+    const rack = document.getElementById('srv-rack').value;
+    return {
+        name: document.getElementById('srv-name').value.trim(),
+        category: document.getElementById('srv-cat').value,
+        brand: document.getElementById('srv-brand').value.trim(),
+        model: document.getElementById('srv-model').value.trim(),
+        serial: document.getElementById('srv-serial').value.trim(),
+        asset_tag: document.getElementById('srv-asset').value.trim(),
+        rack_id: parseInt(rack, 10),
+        u_start: parseInt(document.getElementById('srv-ustart').value, 10) || 1,
+        u_size: parseInt(document.getElementById('srv-usize').value, 10) || 1,
+        status: document.getElementById('srv-status').value,
+        management_ip: document.getElementById('srv-ip').value.trim(),
+        additional_ips: collectServerExtraIps(),
+        os: document.getElementById('srv-os').value.trim(),
+        owner: document.getElementById('srv-owner').value.trim(),
+        cpu: document.getElementById('srv-cpu').value.trim(),
+        memory: document.getElementById('srv-mem').value.trim(),
+        storage_desc: document.getElementById('srv-storage-desc').value.trim(),
+        notes: document.getElementById('srv-notes').value.trim(),
+    };
+}
+
+async function submitAddServer() {
+    const data = collectServer();
+    if (!data.name) { showToast('请填写名称', 'warning'); return; }
+    if (!data.rack_id) { showToast('请选择关联机柜', 'warning'); return; }
+    try {
+        await API.post('/api/assets/servers', data);
+        showToast('已新增', 'success');
+        document.querySelector('.modal-overlay').remove();
+        // 重置筛选，确保新添加的服务器/存储立即可见
+        ['filterRack', 'filterCategory', 'filterStatus', 'filterSearch'].forEach(id => {
+            const el = document.getElementById(id); if (el) el.value = '';
+        });
+        loadServers(); loadSummary(); loadRackUView();
+    } catch (e) { showToast('新增失败: ' + e.message, 'error'); }
+}
+
+async function editServer(id) {
+    try {
+        const s = await API.get('/api/assets/servers/' + id);
+        document.getElementById('modalContainer').innerHTML = serverModalHTML('编辑服务器/存储', s);
+    } catch (e) { showToast('加载失败: ' + e.message, 'error'); }
+}
+
+async function submitEditServer(id) {
+    const data = collectServer();
+    try {
+        await API.put('/api/assets/servers/' + id, data);
+        showToast('已保存', 'success');
+        document.querySelector('.modal-overlay').remove();
+        loadServers(); loadSummary(); loadRackUView();
+    } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+}
+
+async function deleteServer(id) {
+    if (!confirm('确定删除该服务器/存储？')) return;
+    try {
+        await API.delete('/api/assets/servers/' + id);
+        showToast('已删除', 'success');
+        loadServers(); loadSummary(); loadRackUView();
+    } catch (e) { showToast('删除失败: ' + e.message, 'error'); }
+}
+
+loadRacks();
+loadCategories();
+loadServers();
+loadSummary();
+loadRackUView();
+</script>
+{% endblock %}

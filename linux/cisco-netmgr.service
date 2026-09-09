@@ -1,0 +1,26 @@
+[Unit]
+Description=Cisco Network Manager (网络自动化运维平台)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=netmgr
+Group=netmgr
+WorkingDirectory=/opt/cisco-netmgr
+# Data is stored under this dir (commands.json, netmgr.db, backups, exports)
+Environment=CISCO_NM_DATA_DIR=/opt/cisco-netmgr/data
+Environment=NETMGR_HOST=0.0.0.0
+Environment=NETMGR_PORT=9632
+ExecStart=/opt/cisco-netmgr/CiscoNetworkManager --port 9632 --data-dir /opt/cisco-netmgr/data
+Restart=on-failure
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/cisco-netmgr/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

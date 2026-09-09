@@ -1,0 +1,55 @@
+<!-- Scheduled Tasks -->
+<div class="card">
+    <div class="card-header">
+        定时任务配置
+        <button class="btn btn-sm btn-primary" onclick="showAddScheduleModal()">➕ 添加任务</button>
+    </div>
+    <div class="card-body">
+        <div style="margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 6px; font-size: 13px; color: #666;">
+            <strong>Cron表达式格式：</strong> 分 时 日 月 星期<br>
+            示例：<code>0 2 * * *</code> = 每天凌晨2点 ｜ <code>0 3 * * 1</code> = 每周一凌晨3点 ｜ <code>*/30 * * * *</code> = 每30分钟
+        </div>
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>任务类型</th>
+                        <th>Cron表达式</th>
+                        <th>说明</th>
+                        <th>状态</th>
+                        <th>上次运行</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="scheduleTable">
+                    <tr><td colspan="6" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Device Groups -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        设备分组管理
+        <button class="btn btn-sm btn-primary" onclick="showAddGroupModal()">➕ 添加分组</button>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>分组名称</th>
+                        <th>说明</th>
+                        <th>设备数量</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="groupTable">
+                    <tr><td colspan="4" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>

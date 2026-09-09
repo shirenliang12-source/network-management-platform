@@ -1,0 +1,371 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>📦 其他资产</h1>
+    <div>
+        <button class="btn btn-primary" onclick="showAddAssetModal()">＋ 新增资产</button>
+    </div>
+</div>
+
+<!-- Summary stats -->
+<div class="stats-grid" id="assetStatsGrid" style="grid-template-columns: repeat(4, 1fr);">
+    <div class="stat-card">
+        <div class="stat-icon blue">📦</div>
+        <div><div class="stat-value" id="it-count">-</div><div class="stat-label">IT资产总数</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon indigo">🖥️</div>
+        <div><div class="stat-value" id="srv-count">-</div><div class="stat-label">服务器/存储</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon green">🔗</div>
+        <div><div class="stat-value" id="it-linked">-</div><div class="stat-label">已关联网络设备</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon orange">📋</div>
+        <div><div class="stat-value" id="it-active">-</div><div class="stat-label">在用资产</div></div>
+    </div>
+</div>
+
+<!-- Filters + table -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        📦 IT 资产列表
+        <span style="font-size: 13px; font-weight: normal;">
+            <select class="form-control" id="filterType" onchange="loadAssets()" style="display:inline-block;width:auto;">
+                <option value="">全部类型</option>
+                <option value="打印机">打印机</option>
+                <option value="无线AP">无线AP</option>
+                <option value="IP电话">IP电话</option>
+                <option value="摄像头">摄像头</option>
+                <option value="其他">其他</option>
+            </select>
+            <select class="form-control" id="filterStatus" onchange="loadAssets()" style="display:inline-block;width:auto;">
+                <option value="">全部状态</option>
+                <option value="在用">在用</option>
+                <option value="备用">备用</option>
+                <option value="停用">停用</option>
+                <option value="报废">报废</option>
+            </select>
+            <select class="form-control" id="filterSite" onchange="loadAssets()" style="display:inline-block;width:auto;">
+                <option value="">全部站点</option>
+            </select>
+            <input type="text" class="form-control" id="filterSearch" placeholder="搜索名称/品牌/型号/编号..." oninput="loadAssets()" style="display:inline-block;width:auto;min-width:200px;">
+        </span>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>资产名称</th>
+                        <th>类型</th>
+                        <th>品牌 / 型号</th>
+                        <th>关联网络设备</th>
+                        <th>所在站点</th>
+                        <th>关联机柜</th>
+                        <th>机柜位置</th>
+                        <th>管理IP</th>
+                        <th>状态</th>
+                        <th style="min-width: 130px;">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="assetBody">
+                    <tr><td colspan="10" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 机柜 U 位视图（其他资产） -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        🎛️ 机柜 U 位视图（其他资产）
+        <select class="form-control" id="itViewRack" onchange="loadRackUView()" style="display:inline-block;width:auto;"></select>
+    </div>
+    <div class="card-body">
+        <div id="itRackUView"><div class="empty-state">加载中...</div></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const IT_TYPES = ["打印机", "无线AP", "IP电话", "摄像头", "其他"];
+const ASSET_STATUSES = ["在用", "备用", "停用", "报废"];
+
+let SITES = [];
+let DEVICES = [];
+let RACKS = [];
+
+function assetStatusBadge(s) {
+    const map = {
+        '在用':'<span class="badge badge-success">在用</span>',
+        '备用':'<span class="badge badge-info">备用</span>',
+        '停用':'<span class="badge badge-warning">停用</span>',
+        '报废':'<span class="badge badge-secondary">报废</span>',
+    };
+    return map[s] || `<span class="badge badge-secondary">${escapeHtml(s||'')}</span>`;
+}
+
+async function loadSites() {
+    try {
+        SITES = await API.get('/api/dc/sites');
+        const sel = document.getElementById('filterSite');
+        const cur = sel.value;
+        sel.innerHTML = '<option value="">全部站点</option>' + SITES.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+        sel.value = cur;
+    } catch (e) { console.error(e); }
+}
+
+async function loadDevices() {
+    try {
+        DEVICES = await API.get('/api/devices');
+    } catch (e) { console.error(e); }
+}
+
+async function loadRacks() {
+    try {
+        RACKS = await API.get('/api/dc/racks');
+        const sel = document.getElementById('itViewRack');
+        if (sel) sel.innerHTML = '<option value="">选择机柜查看资产 U 位...</option>' + RACKS.map(r => `<option value="${r.id}">${escapeHtml((r.site_name||'')+' / '+r.rack_number)}</option>`).join('');
+        loadRackUView();
+    } catch (e) { console.error(e); }
+}
+
+async function loadSummary() {
+    try {
+        const s = await API.get('/api/assets/summary');
+        document.getElementById('it-count').textContent = s.it_count;
+        document.getElementById('srv-count').textContent = s.server_count;
+        const all = await API.get('/api/assets/it');
+        document.getElementById('it-linked').textContent = all.filter(i => i.linked_device_id).length;
+        document.getElementById('it-active').textContent = all.filter(i => i.status === '在用').length;
+    } catch (e) { console.error(e); }
+}
+
+async function loadAssets() {
+    try {
+        const params = new URLSearchParams();
+        const type = document.getElementById('filterType').value;
+        const status = document.getElementById('filterStatus').value;
+        const site = document.getElementById('filterSite').value;
+        const search = document.getElementById('filterSearch').value.trim();
+        if (type) params.set('asset_type', type);
+        if (status) params.set('status', status);
+        if (site) params.set('site_id', site);
+        if (search) params.set('search', search);
+        const items = await API.get('/api/assets/it?' + params.toString());
+        const body = document.getElementById('assetBody');
+        if (items.length === 0) {
+            body.innerHTML = '<tr><td colspan="10" class="empty-state">📦 暂无资产，点击右上角「新增资产」录入</td></tr>';
+            return;
+        }
+        body.innerHTML = items.map(a => `
+            <tr>
+                <td><strong>${escapeHtml(a.name)}</strong></td>
+                <td>${escapeHtml(a.asset_type||'-')}</td>
+                <td>${escapeHtml(a.brand||'-')}<br><span style="color:#888;font-size:12px;">${escapeHtml(a.model||'')}</span></td>
+                <td>${a.linked_device_name ? '🔗 '+escapeHtml(a.linked_device_name) : '<span style="color:#aaa;">—</span>'}</td>
+                <td>${escapeHtml(a.site_name||'-')}</td>
+                <td>${a.rack_number ? '🎛️ '+escapeHtml(a.rack_number) : '<span style="color:#aaa;">—</span>'}</td>
+                <td>${escapeHtml(a.rack_position||'-')}</td>
+                <td><code>${escapeHtml(a.management_ip||'-')}</code></td>
+                <td>${assetStatusBadge(a.status)}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline" onclick="editAsset(${a.id})">编辑</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteAsset(${a.id})">删除</button>
+                </td>
+            </tr>`).join('');
+    } catch (e) {
+        showToast('加载资产失败: ' + e.message, 'error');
+    }
+}
+
+// 渲染单个机柜的 U 位视图（叠加其他资产占用，按「机柜位置」里的 U\d+ 定位）
+function itRackUHTML(rack, assets) {
+    const u = Math.max(1, rack.u_height || 1);
+    const occ = new Array(u + 1).fill(null);
+    const unparsed = [];
+    (assets || []).forEach(a => {
+        const m = (a.rack_position || '').match(/U\s*(\d+)/i);
+        if (m) {
+            const uu = parseInt(m[1], 10);
+            if (uu >= 1 && uu <= u) {
+                occ[uu] = a;
+            } else {
+                unparsed.push(a);
+            }
+        } else {
+            unparsed.push(a);
+        }
+    });
+    const barH = Math.min(u * 7, 320);
+    const cellH = barH / u;
+    let cells = '', labels = '';
+    for (let i = u; i >= 1; i--) {
+        const a = occ[i];
+        if (a) {
+            cells += `<div style="height:${cellH}px;background:linear-gradient(#10b981,#10b981cc);border:1px solid #10b981;border-radius:3px;margin:1px 0;color:#fff;font-size:10px;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:0 2px;" title="${escapeHtml(a.name)} (U${i})">${escapeHtml(a.name)}</div>`;
+        } else {
+            cells += `<div style="height:${cellH}px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:3px;margin:1px 0;"></div>`;
+        }
+        labels += `<div style="height:${cellH}px;font-size:9px;color:#94a3b8;display:flex;align-items:center;justify-content:flex-end;padding-right:3px;">U${i}</div>`;
+    }
+    let html = `
+    <div style="width:180px;border:1px solid #e6eaf0;border-radius:10px;padding:10px;text-align:center;background:#fff;">
+        <div style="font-weight:700;">${escapeHtml(rack.rack_number||'')}</div>
+        <div style="color:#888;font-size:12px;margin-bottom:6px;height:16px;overflow:hidden;">${escapeHtml(rack.name||'')}</div>
+        <div style="display:flex;justify-content:center;">
+            <div style="width:24px;">${labels}</div>
+            <div style="width:120px;">${cells}</div>
+        </div>
+        <div style="margin-top:6px;font-size:11px;color:#666;">${u}U · ${escapeHtml(rack.site_name||'')}</div>
+    </div>`;
+    if (unparsed.length) {
+        html += `<div style="margin-top:10px;width:100%;"><div style="font-size:12px;color:#666;margin-bottom:4px;">以下资产「机柜位置」未解析为 U 位，仅作文字记录：</div>` +
+            unparsed.map(a => `<span style="display:inline-block;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px;padding:2px 6px;margin:2px;font-size:11px;">${escapeHtml(a.name)} · ${escapeHtml(a.rack_position||'未填位置')}</span>`).join('') +
+            `</div>`;
+    }
+    return html;
+}
+
+// 加载其他资产机柜 U 位视图
+async function loadRackUView() {
+    const target = document.getElementById('itRackUView');
+    if (!target) return;
+    const rid = document.getElementById('itViewRack') ? document.getElementById('itViewRack').value : '';
+    if (!rid) { target.innerHTML = '<div class="empty-state">请选择机柜查看资产 U 位</div>'; return; }
+    try {
+        const rack = RACKS.find(r => String(r.id) === String(rid));
+        if (!rack) { target.innerHTML = '<div class="empty-state">机柜不存在</div>'; return; }
+        const assets = await API.get('/api/assets/it?rack_id=' + rid);
+        target.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start;">${itRackUHTML(rack, assets)}<div style="align-self:center;color:#888;font-size:12px;max-width:200px;">绿色=其他资产。在「机柜位置」填写「U12」等格式，会在对应 U 位显示；填写「顶板」「中层」等无法解析为 U 位的，会列在下方。每个资产默认占 1 个 U 位。</div></div>`;
+    } catch (e) {
+        target.innerHTML = '<div class="empty-state">加载失败</div>';
+    }
+}
+
+// ---------- Asset modal ----------
+function assetModalHTML(title, a) {
+    a = a || {};
+    const siteOpts = SITES.map(s => `<option value="${s.id}" ${a.site_id===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('');
+    const devOpts = '<option value="">（不关联）</option>' + DEVICES.map(d => `<option value="${d.id}" ${a.linked_device_id===d.id?'selected':''}>${escapeHtml(d.name)} (${escapeHtml(d.ip_address||'')})</option>`).join('');
+    const rackOpts = RACKS.map(r => `<option value="${r.id}" ${a.rack_id===r.id?'selected':''}>${escapeHtml((r.site_name||'')+' / '+r.rack_number)}</option>`).join('');
+    const typeOpts = IT_TYPES.map(x => `<option value="${x}" ${(a.asset_type||'其他')===x?'selected':''}>${x}</option>`).join('');
+    const statusOpts = ASSET_STATUSES.map(x => `<option value="${x}" ${(a.status||'在用')===x?'selected':''}>${x}</option>`).join('');
+    return `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal" style="max-width:640px;"><div class="modal-header"><h3>${title}</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+            <div class="modal-body">
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>资产名称 *</label><input type="text" class="form-control" id="it-name" value="${escapeHtml(a.name||'')}"></div>
+                    <div class="form-group" style="flex:1;"><label>类型</label><select class="form-control" id="it-type">${typeOpts}</select></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>品牌</label><input type="text" class="form-control" id="it-brand" value="${escapeHtml(a.brand||'')}"></div>
+                    <div class="form-group" style="flex:1;"><label>型号</label><input type="text" class="form-control" id="it-model" value="${escapeHtml(a.model||'')}"></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>序列号</label><input type="text" class="form-control" id="it-serial" value="${escapeHtml(a.serial||'')}"></div>
+                    <div class="form-group" style="flex:1;"><label>资产编号</label><input type="text" class="form-control" id="it-asset" value="${escapeHtml(a.asset_tag||'')}"></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>关联网络设备（已发现的网络设备）</label><select class="form-control" id="it-device">${devOpts}</select></div>
+                    <div class="form-group" style="flex:1;"><label>所在站点</label><select class="form-control" id="it-site">${siteOpts || '<option value="">（可选）</option>'}</select></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1.4;"><label>关联机柜</label><select class="form-control" id="it-rack">${rackOpts || '<option value="">（可选，需先新增机柜）</option>'}</select></div>
+                    <div class="form-group" style="flex:1;"><label>机柜位置</label><input type="text" class="form-control" id="it-rackpos" value="${escapeHtml(a.rack_position||'')}" placeholder="如 U12 / 顶板 / 中层"></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>管理 IP</label><input type="text" class="form-control" id="it-ip" value="${escapeHtml(a.management_ip||'')}"></div>
+                    <div class="form-group" style="flex:1;"><label>状态</label><select class="form-control" id="it-status">${statusOpts}</select></div>
+                </div>
+                <div class="form-group"><label>具体位置</label><input type="text" class="form-control" id="it-loc" value="${escapeHtml(a.location_detail||'')}" placeholder="如 3F-办公区-A座"></div>
+                <div class="form-group"><label>备注</label><textarea class="form-control" id="it-notes" rows="2">${escapeHtml(a.notes||'')}</textarea></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                <button class="btn btn-primary" onclick="${a.id ? 'submitEditAsset('+a.id+')' : 'submitAddAsset()'}">保存</button>
+            </div></div></div>`;
+}
+
+function showAddAssetModal() {
+    document.getElementById('modalContainer').innerHTML = assetModalHTML('新增资产', {});
+}
+
+function collectAsset() {
+    const site = document.getElementById('it-site').value;
+    const dev = document.getElementById('it-device').value;
+    const rack = document.getElementById('it-rack').value;
+    return {
+        name: document.getElementById('it-name').value.trim(),
+        asset_type: document.getElementById('it-type').value,
+        brand: document.getElementById('it-brand').value.trim(),
+        model: document.getElementById('it-model').value.trim(),
+        serial: document.getElementById('it-serial').value.trim(),
+        asset_tag: document.getElementById('it-asset').value.trim(),
+        management_ip: document.getElementById('it-ip').value.trim(),
+        linked_device_id: dev ? parseInt(dev, 10) : null,
+        site_id: site ? parseInt(site, 10) : null,
+        rack_id: rack ? parseInt(rack, 10) : null,
+        rack_position: document.getElementById('it-rackpos').value.trim(),
+        location_detail: document.getElementById('it-loc').value.trim(),
+        status: document.getElementById('it-status').value,
+        notes: document.getElementById('it-notes').value.trim(),
+    };
+}
+
+async function submitAddAsset() {
+    const data = collectAsset();
+    if (!data.name) { showToast('请填写资产名称', 'warning'); return; }
+    try {
+        await API.post('/api/assets/it', data);
+        showToast('已新增资产', 'success');
+        document.querySelector('.modal-overlay').remove();
+        // 重置筛选，确保新添加的资产立即可见
+        ['filterType', 'filterStatus', 'filterSite', 'filterSearch'].forEach(id => {
+            const el = document.getElementById(id); if (el) el.value = '';
+        });
+        loadAssets();
+        loadSummary();
+    } catch (e) { showToast('新增失败: ' + e.message, 'error'); }
+}
+
+async function editAsset(id) {
+    try {
+        const a = await API.get('/api/assets/it/' + id);
+        document.getElementById('modalContainer').innerHTML = assetModalHTML('编辑资产', a);
+    } catch (e) { showToast('加载失败: ' + e.message, 'error'); }
+}
+
+async function submitEditAsset(id) {
+    const data = collectAsset();
+    try {
+        await API.put('/api/assets/it/' + id, data);
+        showToast('已保存', 'success');
+        document.querySelector('.modal-overlay').remove();
+        loadAssets();
+        loadSummary();
+    } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+}
+
+async function deleteAsset(id) {
+    if (!confirm('确定删除该资产？')) return;
+    try {
+        await API.delete('/api/assets/it/' + id);
+        showToast('已删除', 'success');
+        loadAssets();
+        loadSummary();
+    } catch (e) { showToast('删除失败: ' + e.message, 'error'); }
+}
+
+loadSites();
+loadDevices();
+loadRacks();
+loadAssets();
+loadSummary();
+</script>
+{% endblock %}

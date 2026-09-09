@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>🔗 平台集成</h1>
+        <p style="color:#6c757d;margin:6px 0 0;">从 Zabbix 或 VMware vCenter 发现虚拟机与存储信息，选择后导入虚拟机系统。</p>
+    </div>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(390px,1fr));gap:18px;">
+    <div class="card">
+        <div class="card-header">📈 Zabbix</div>
+        <div class="card-body">
+            <div class="form-group"><label>API 地址</label><input id="zabbix-url" class="form-control" placeholder="https://zabbix.example.com/zabbix"></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <div class="form-group"><label>用户名</label><input id="zabbix-username" class="form-control" autocomplete="off"></div>
+                <div class="form-group"><label>密码</label><input id="zabbix-password" type="password" class="form-control" autocomplete="new-password" placeholder="留空保留原密码"></div>
+            </div>
+            <div class="form-group">
+                <label>出口网卡（源 IP）</label>
+                <select id="zabbix-source-ip" class="form-control"><option value="">自动选择（系统路由）</option></select>
+                <small style="color:#6c757d;">多网卡环境可指定访问 Zabbix API 使用的本机网卡。</small>
+            </div>
+            <div style="display:flex;gap:18px;align-items:center;margin-bottom:14px;">
+                <label><input id="zabbix-verify" type="checkbox" checked> 校验 HTTPS 证书</label>
+                <label>超时 <input id="zabbix-timeout" type="number" min="3" max="120" value="20" class="form-control" style="display:inline-block;width:74px;"> 秒</label>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn btn-primary" data-action="save" data-source="zabbix">保存</button>
+                <button class="btn btn-outline" data-action="test" data-source="zabbix">测试连接</button>
+                <button class="btn btn-success" data-action="discover" data-source="zabbix">获取清单</button>
+                <button class="btn btn-outline" data-action="preview" data-source="zabbix">差异预演</button>
+                <button class="btn btn-primary" data-action="sync" data-source="zabbix">全量同步</button>
+            </div>
+            <div id="zabbix-status" style="font-size:13px;margin-top:10px;color:#6c757d;"></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">☁️ VMware vCenter</div>
+        <div class="card-body">
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;">
+                <div class="form-group"><label>vCenter 地址</label><input id="vcenter-host" class="form-control" placeholder="vcenter.example.com"></div>
+                <div class="form-group"><label>端口</label><input id="vcenter-port" type="number" min="1" max="65535" value="443" class="form-control"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <div class="form-group"><label>用户名</label><input id="vcenter-username" class="form-control" placeholder="administrator@vsphere.local" autocomplete="off"></div>
+                <div class="form-group"><label>密码</label><input id="vcenter-password" type="password" class="form-control" autocomplete="new-password" placeholder="留空保留原密码"></div>
+            </div>
+            <div style="display:flex;gap:18px;align-items:center;margin-bottom:14px;">
+                <label><input id="vcenter-verify" type="checkbox" checked> 校验 HTTPS 证书</label>
+                <label>超时 <input id="vcenter-timeout" type="number" min="3" max="120" value="30" class="form-control" style="display:inline-block;width:74px;"> 秒</label>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn btn-primary" data-action="save" data-source="vcenter">保存</button>
+                <button class="btn btn-outline" data-action="test" data-source="vcenter">测试连接</button>
+                <button class="btn btn-success" data-action="discover" data-source="vcenter">获取清单</button>
+                <button class="btn btn-outline" data-action="preview" data-source="vcenter">差异预演</button>
+                <button class="btn btn-primary" data-action="sync" data-source="vcenter">全量同步</button>
+            </div>
+            <div id="vcenter-status" style="font-size:13px;margin-top:10px;color:#6c757d;"></div>
+        </div>
+    </div>
+</div>
+
+<div class="card" id="inventory-panel" style="margin-top:20px;display:none;">
+    <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+        <span id="inventory-title">发现结果</span>
+        <div>
+            <label style="font-size:13px;margin-right:10px;"><input id="update-existing" type="checkbox" checked> 更新已导入记录</label>
+            <button class="btn btn-primary" id="import-selected">导入选中项</button>
+        </div>
+    </div>
+    <div class="card-body">
+        <div id="inventory-summary" style="margin-bottom:12px;color:#6c757d;"></div>
+        <div class="table-container">
+            <table class="data-table">
+                <thead><tr>
+                    <th><input id="select-all-vms" type="checkbox" checked></th><th>名称</th><th>状态</th><th>系统/IP</th><th>宿主机</th><th>CPU/内存</th><th>磁盘/存储</th><th>导入状态</th>
+                </tr></thead>
+                <tbody id="integration-vm-body"></tbody>
+            </table>
+        </div>
+        <h3 style="margin-top:22px;">存储清单</h3>
+        <div class="table-container">
+            <table class="data-table">
+                <thead><tr><th>名称</th><th>类型</th><th>容量</th><th>已用</th><th>可用</th><th>虚拟机数</th><th>状态/差异</th></tr></thead>
+                <tbody id="integration-storage-body"><tr><td colspan="7" class="empty-state">当前数据源未返回独立存储清单</td></tr></tbody>
+            </table>
+        </div>
+        <div id="missing-panel" style="display:none;margin-top:18px;padding:12px;border:1px solid #f0c36d;background:#fff8e7;border-radius:6px;">
+            <strong>⚠ 外部源已不再发现的资产</strong>
+            <div id="missing-vm-list" style="margin-top:8px;"></div>
+            <div id="missing-storage-list" style="margin-top:8px;"></div>
+            <small>全量同步只会标记失联，不会自动删除。虚拟机可在虚拟机系统中人工确认或解除外部关联。</small>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-top:20px;">
+    <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>🕘 同步历史</span><button class="btn btn-sm btn-outline" onclick="loadSyncHistory()">刷新</button>
+    </div>
+    <div class="card-body"><div class="table-container"><table class="data-table">
+        <thead><tr><th>时间</th><th>来源</th><th>模式</th><th>状态</th><th>发现</th><th>结果</th><th>尝试</th><th>错误</th></tr></thead>
+        <tbody id="sync-history-body"><tr><td colspan="8" class="empty-state">加载中...</td></tr></tbody>
+    </table></div></div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/js/integrations.js?v={{ APP_VERSION }}"></script>{% endblock %}

@@ -1,0 +1,724 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>设备管理</h1>
+    <div>
+        <button class="btn btn-outline" onclick="exportCSV()">📥 导出CSV</button>
+        <button class="btn btn-secondary" onclick="showImportModal()">📤 导入CSV</button>
+        <button class="btn btn-primary" onclick="showAddModal()">➕ 添加设备</button>
+    </div>
+</div>
+
+<div class="search-bar">
+    <input type="text" class="form-control" id="searchInput" placeholder="搜索设备名称、IP或公司..." oninput="loadDevices()">
+    <select class="form-control" id="companyFilter" style="width: 140px;" onchange="loadDevices()">
+        <option value="">全部公司</option>
+    </select>
+    <select class="form-control" id="groupFilter" style="width: 150px;" onchange="loadDevices()">
+        <option value="">全部分组</option>
+    </select>
+    <select class="form-control" id="statusFilter" style="width: 120px;" onchange="loadDevices()">
+        <option value="">全部状态</option>
+        <option value="online">在线</option>
+        <option value="offline">离线</option>
+        <option value="unknown">未知</option>
+    </select>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
+                        <th>设备名称</th>
+                        <th>IP地址</th>
+                        <th>类型</th>
+                        <th>公司</th>
+                        <th>型号</th>
+                        <th>功能</th>
+                        <th>源IP</th>
+                        <th>分组</th>
+                        <th>状态</th>
+                        <th>最后备份</th>
+                        <th>最后发现</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="devicesTableBody">
+                    <tr><td colspan="11" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+            <button class="btn btn-sm btn-success" onclick="batchBackup()">💾 批量备份</button>
+            <button class="btn btn-sm btn-primary" onclick="batchDiscover()">🔍 批量发现</button>
+            <button class="btn btn-sm btn-info" onclick="batchConnect()">⚡ 一键连接</button>
+            <button class="btn btn-sm btn-warning" onclick="batchCollectInfo()">📋 批量采集信息</button>
+            <select class="form-control" id="applyProfileSelect" style="width: 200px;">
+                <option value="">应用凭据配置到选中…</option>
+            </select>
+            <button class="btn btn-sm btn-outline" onclick="applyProfileToSelected()">🔑 应用账号</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let devices = [];
+
+function deviceTypeText(t) {
+    const map = {
+        'cisco_ios': 'Cisco IOS',
+        'cisco_ios_xe': 'Cisco IOS-XE',
+        'cisco_nxos': 'Cisco NX-OS',
+        'cisco_wlc': 'Cisco WLC',
+        'cisco_ap': 'Cisco AP',
+    };
+    return map[t] || t;
+}
+
+async function loadGroups() {
+    try {
+        const groups = await API.get('/api/devices/groups');
+        const select = document.getElementById('groupFilter');
+        groups.forEach(g => {
+            const opt = document.createElement('option');
+            opt.value = g.id;
+            opt.textContent = g.name;
+            select.appendChild(opt);
+        });
+    } catch (e) { console.error(e); }
+}
+
+// Populate a <select> with device groups (used by add/edit modals).
+async function populateGroupSelect(selectId, selectedId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    select.innerHTML = '<option value="">— 无分组 —</option>';
+    try {
+        const groups = await API.get('/api/devices/groups');
+        groups.forEach(g => {
+            const opt = document.createElement('option');
+            opt.value = g.id;
+            opt.textContent = g.name;
+            if (selectedId !== undefined && selectedId !== null && g.id === selectedId) {
+                opt.selected = true;
+            }
+            select.appendChild(opt);
+        });
+    } catch (e) { console.error(e); }
+}
+
+async function loadCompanies() {
+    try {
+        const companies = await API.get('/api/devices/companies');
+        const select = document.getElementById('companyFilter');
+        companies.forEach(c => {
+            if (!c.company) return; // skip empty
+            const opt = document.createElement('option');
+            opt.value = c.company;
+            opt.textContent = `${c.company} (${c.device_count})`;
+            select.appendChild(opt);
+        });
+    } catch (e) { console.error(e); }
+}
+
+async function loadProfileOptions() {
+    try {
+        const profiles = await API.get('/api/credentials/profiles');
+        const select = document.getElementById('applyProfileSelect');
+        profiles.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.id;
+            opt.textContent = `${p.name} (${deviceTypeText(p.device_type)})`;
+            select.appendChild(opt);
+        });
+    } catch (e) { console.error('loadProfileOptions', e); }
+}
+
+function renderDeviceIps(d) {
+    const extras = (d.additional_ips || []).map(x => x.ip_address);
+    let html = `<code>${escapeHtml(d.ip_address)}</code>`;
+    if (extras.length) {
+        const all = [d.ip_address, ...extras].join(' ');
+        html = `<span title="${escapeAttr(all)}">` +
+               `<code>${escapeHtml(d.ip_address)}</code> ` +
+               `<span class="badge badge-secondary">+${extras.length}</span></span>`;
+    }
+    return html;
+}
+
+function collectExtraIps(prefix) {
+    const out = [];
+    for (let i = 2; i <= 10; i++) {
+        const el = document.getElementById(`${prefix}-ip${i}`);
+        if (el && el.value.trim()) out.push(el.value.trim());
+    }
+    return out;
+}
+
+async function loadDevices() {
+    const search = document.getElementById('searchInput').value;
+    const company = document.getElementById('companyFilter').value;
+    const groupId = document.getElementById('groupFilter').value;
+    const status = document.getElementById('statusFilter').value;
+
+    let url = '/api/devices?';
+    if (search) url += `search=${encodeURIComponent(search)}&`;
+    if (company) url += `company=${encodeURIComponent(company)}&`;
+    if (groupId) url += `group_id=${groupId}&`;
+    if (status) url += `status=${status}&`;
+
+    try {
+        devices = await API.get(url);
+        const body = document.getElementById('devicesTableBody');
+        if (devices.length > 0) {
+            body.innerHTML = devices.map(d => `
+                <tr>
+                    <td><input type="checkbox" class="device-checkbox" value="${d.id}"></td>
+                    <td><a href="/devices/${d.id}" style="text-decoration: none; font-weight: 500;">${escapeHtml(d.name)}</a></td>
+                    <td>${renderDeviceIps(d)}</td>
+                    <td>${deviceTypeLabel(d.device_type)}</td>
+                    <td>${d.company ? `<span class="badge badge-secondary">${escapeHtml(d.company)}</span>` : '<span style="color:#999;">-</span>'}</td>
+                    <td>${d.model ? escapeHtml(d.model) : '<span style="color:#999;">-</span>'}</td>
+                    <td>${d.function ? `<span class="badge badge-secondary">${escapeHtml(d.function)}</span>` : '<span style="color:#999;">-</span>'}</td>
+                    <td>${d.source_ip ? `<code style="font-size:11px;">${escapeHtml(d.source_ip)}</code>` : '<span style="color:#999;">自动</span>'}</td>
+                    <td>${escapeHtml(d.group_name || '-')}</td>
+                    <td>${statusBadge(d.status)}</td>
+                    <td>${formatRelative(d.last_backup)}</td>
+                    <td>${formatRelative(d.last_discovery)}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline" onclick="testConnection(${d.id})" title="测试连接">🔌</button>
+                        <button class="btn btn-sm btn-outline" onclick="editDevice(${d.id})" title="编辑">✏️</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteDevice(${d.id})" title="删除">🗑️</button>
+                    </td>
+                </tr>
+            `).join('');
+        } else {
+            body.innerHTML = '<tr><td colspan="11" class="empty-state">📡 暂无设备，点击右上角添加</td></tr>';
+        }
+    } catch (e) {
+        showToast('加载设备列表失败: ' + e.message, 'error');
+    }
+}
+
+function toggleSelectAll() {
+    const checked = document.getElementById('selectAll').checked;
+    document.querySelectorAll('.device-checkbox').forEach(cb => cb.checked = checked);
+}
+
+function getSelectedIds() {
+    return Array.from(document.querySelectorAll('.device-checkbox:checked')).map(cb => parseInt(cb.value));
+}
+
+function showAddModal() {
+    const modal = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal">
+                <div class="modal-header">
+                    <h3>添加设备</h3>
+                    <button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>设备名称 *</label>
+                        <input type="text" class="form-control" id="add-name" placeholder="SW-Core-01">
+                    </div>
+                    <div class="form-group">
+                        <label>IP地址 *</label>
+                        <input type="text" class="form-control" id="add-ip" placeholder="192.168.1.1">
+                        <div style="font-size: 11px; color: #999; margin-top: 2px;">主管理 IP；多网卡/多 IP 设备可在下方继续添加</div>
+                    </div>
+                    <div class="form-group">
+                        <label>额外 IP 地址（多网卡）</label>
+                        <div style="display:flex; gap:6px; flex-direction:column;">
+                            <input type="text" class="form-control" id="add-ip2" placeholder="额外 IP 2（可选）">
+                            <input type="text" class="form-control" id="add-ip3" placeholder="额外 IP 3（可选）">
+                            <input type="text" class="form-control" id="add-ip4" placeholder="额外 IP 4（可选）">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>设备类型</label>
+                        <input type="text" class="form-control" id="add-type" list="device-type-list" value="cisco_ios" placeholder="选择或输入自定义类型">
+                        <datalist id="device-type-list">
+                            <option value="cisco_ios">Cisco IOS</option>
+                            <option value="cisco_ios_xe">Cisco IOS-XE</option>
+                            <option value="cisco_nxos">Cisco NX-OS</option>
+                            <option value="cisco_wlc">Cisco WLC</option>
+                            <option value="cisco_ap">Cisco AP</option>
+                        </datalist>
+                        <div style="font-size: 11px; color: #999; margin-top: 2px;">可从下拉建议选择，也可直接输入自定义类型（如 huawei / h3c / juniper 等）</div>
+                    </div>
+                    <div class="form-group">
+                        <label>所属公司 / 客户</label>
+                        <input type="text" class="form-control" id="add-company" placeholder="如：甲公司 / 总部 / 分公司A">
+                        <div style="font-size: 11px; color: #999; margin-top: 2px;">用于按公司分组管理设备</div>
+                    </div>
+                    <div class="form-group">
+                        <label>设备分组</label>
+                        <select class="form-control" id="add-group">
+                            <option value="">— 无分组 —</option>
+                        </select>
+                        <div style="font-size: 11px; color: #999; margin-top: 2px;">将设备归入某个分组（如 核心/接入/边缘）</div>
+                    </div>
+                    <div class="form-group">
+                        <label>型号</label>
+                        <input type="text" class="form-control" id="add-model" placeholder="如：C9300L-48T / WS-C2960X">
+                    </div>
+                    <div class="form-group">
+                        <label>功能 / 用途</label>
+                        <input type="text" class="form-control" id="add-function" placeholder="如：核心交换机 / 接入交换机 / 出口防火墙">
+                        <div style="font-size: 11px; color: #999; margin-top: 2px;">用于区分设备的功能定位</div>
+                    </div>
+                    <div class="form-group">
+                        <label>出厂日期（手动）</label>
+                        <input type="text" class="form-control" id="add-production-date" placeholder="YYYY-MM-DD 或 YYYY-MM">
+                        <div style="font-size: 11px; color: #999; margin-top: 2px;">Cisco 序列号无法可靠识别出厂日期，可在此手动填写</div>
+                    </div>
+                    <div class="form-group">
+                        <label>用户名</label>
+                        <input type="text" class="form-control" id="add-username" value="admin">
+                    </div>
+                    <div class="form-group">
+                        <label>密码</label>
+                        <input type="password" class="form-control" id="add-password">
+                    </div>
+                    <div class="form-group">
+                        <label>Enable密码</label>
+                        <input type="password" class="form-control" id="add-enable-password">
+                    </div>
+                    <div class="form-group">
+                        <label>SSH端口</label>
+                        <input type="number" class="form-control" id="add-port" value="22">
+                    </div>
+                    <div class="form-group">
+                        <label>出口网卡 (源IP)</label>
+                        <select class="form-control" id="add-source-ip">
+                            <option value="">自动（系统默认路由）</option>
+                        </select>
+                        <div style="font-size: 11px; color: #999; margin-top: 2px;">选择从哪块网卡SSH连接此设备，用于多网卡多网段场景</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                    <button class="btn btn-primary" onclick="submitAddDevice()">添加</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalContainer').innerHTML = modal;
+    loadNICs('add-source-ip');
+    populateGroupSelect('add-group');
+}
+
+async function submitAddDevice() {
+    const data = {
+        name: document.getElementById('add-name').value,
+        ip_address: document.getElementById('add-ip').value,
+        device_type: document.getElementById('add-type').value,
+        company: document.getElementById('add-company').value,
+        group_id: document.getElementById('add-group').value ? parseInt(document.getElementById('add-group').value) : null,
+        model: document.getElementById('add-model').value,
+        function: document.getElementById('add-function').value,
+        username: document.getElementById('add-username').value,
+        password: document.getElementById('add-password').value,
+        enable_password: document.getElementById('add-enable-password').value,
+        port: parseInt(document.getElementById('add-port').value),
+        source_ip: document.getElementById('add-source-ip').value,
+        additional_ips: collectExtraIps('add'),
+        production_date_manual: document.getElementById('add-production-date').value.trim(),
+    };
+    if (!data.name || !data.ip_address) {
+        showToast('请填写设备名称和IP地址', 'warning');
+        return;
+    }
+    try {
+        await API.post('/api/devices', data);
+        showToast('设备添加成功', 'success');
+        document.querySelector('.modal-overlay').remove();
+        loadDevices();
+    } catch (e) {
+        showToast('添加失败: ' + e.message, 'error');
+    }
+}
+
+async function editDevice(id) {
+    try {
+        const d = await API.get(`/api/devices/${id}`);
+        const extras = (d.additional_ips || []).map(x => x.ip_address);
+        const modal = `
+            <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+                <div class="modal">
+                    <div class="modal-header">
+                        <h3>编辑设备</h3>
+                        <button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group"><label>设备名称</label><input type="text" class="form-control" id="edit-name" value="${escapeAttr(d.name)}"></div>
+                        <div class="form-group"><label>IP地址</label><input type="text" class="form-control" id="edit-ip" value="${escapeAttr(d.ip_address)}"></div>
+                        <div class="form-group">
+                            <label>额外 IP 地址（多网卡）</label>
+                            <div style="display:flex; gap:6px; flex-direction:column;">
+                                <input type="text" class="form-control" id="edit-ip2" value="${escapeAttr(extras[0] || '')}" placeholder="额外 IP 2（可选）">
+                                <input type="text" class="form-control" id="edit-ip3" value="${escapeAttr(extras[1] || '')}" placeholder="额外 IP 3（可选）">
+                                <input type="text" class="form-control" id="edit-ip4" value="${escapeAttr(extras[2] || '')}" placeholder="额外 IP 4（可选）">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>设备类型</label>
+                            <input type="text" class="form-control" id="edit-type" list="device-type-list" value="${escapeAttr(d.device_type || 'cisco_ios')}" placeholder="选择或输入自定义类型">
+                            <div style="font-size: 11px; color: #999; margin-top: 2px;">可从下拉建议选择，也可直接输入自定义类型</div>
+                        </div>
+                        <div class="form-group"><label>所属公司 / 客户</label><input type="text" class="form-control" id="edit-company" value="${escapeAttr(d.company || '')}"></div>
+                        <div class="form-group">
+                            <label>设备分组</label>
+                            <select class="form-control" id="edit-group">
+                                <option value="">— 无分组 —</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label>型号</label><input type="text" class="form-control" id="edit-model" value="${escapeAttr(d.model || '')}"></div>
+                        <div class="form-group"><label>功能 / 用途</label><input type="text" class="form-control" id="edit-function" value="${escapeAttr(d.function || '')}"></div>
+                        <div class="form-group">
+                            <label>出厂日期（手动）</label>
+                            <input type="text" class="form-control" id="edit-production-date" value="${escapeAttr(d.production_date_manual || '')}" placeholder="YYYY-MM-DD 或 YYYY-MM">
+                            <div style="font-size: 11px; color: #999; margin-top: 2px;">自动识别不可靠时手动维护</div>
+                        </div>
+                        <div class="form-group"><label>用户名</label><input type="text" class="form-control" id="edit-username" value="${escapeAttr(d.username)}"></div>
+                        <div class="form-group"><label>新密码 (留空不修改)</label><input type="password" class="form-control" id="edit-password" placeholder="••••••"></div>
+                        <div class="form-group"><label>新Enable密码 (留空不修改)</label><input type="password" class="form-control" id="edit-enable-password" placeholder="••••••"></div>
+                        <div class="form-group"><label>SSH端口</label><input type="number" class="form-control" id="edit-port" value="${d.port}"></div>
+                        <div class="form-group">
+                            <label>出口网卡 (源IP)</label>
+                            <select class="form-control" id="edit-source-ip">
+                                <option value="">自动（系统默认路由）</option>
+                            </select>
+                            <div style="font-size: 11px; color: #999; margin-top: 2px;">选择从哪块网卡SSH连接此设备</div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                        <button class="btn btn-primary" onclick="submitEditDevice(${id})">保存</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.getElementById('modalContainer').innerHTML = modal;
+        loadNICs('edit-source-ip', d.source_ip);
+        populateGroupSelect('edit-group', d.group_id);
+    } catch (e) {
+        showToast('加载设备信息失败: ' + e.message, 'error');
+    }
+}
+
+async function submitEditDevice(id) {
+    const password = document.getElementById('edit-password').value;
+    const enablePwd = document.getElementById('edit-enable-password').value;
+    const data = {
+        name: document.getElementById('edit-name').value,
+        ip_address: document.getElementById('edit-ip').value,
+        device_type: document.getElementById('edit-type').value,
+        company: document.getElementById('edit-company').value,
+        group_id: document.getElementById('edit-group').value ? parseInt(document.getElementById('edit-group').value) : null,
+        model: document.getElementById('edit-model').value,
+        function: document.getElementById('edit-function').value,
+        username: document.getElementById('edit-username').value,
+        port: parseInt(document.getElementById('edit-port').value),
+        source_ip: document.getElementById('edit-source-ip').value,
+        additional_ips: collectExtraIps('edit'),
+        production_date_manual: document.getElementById('edit-production-date').value.trim(),
+    };
+    if (password) data.password = password;
+    if (enablePwd) data.enable_password = enablePwd;
+
+    try {
+        await API.put(`/api/devices/${id}`, data);
+        showToast('设备更新成功', 'success');
+        document.querySelector('.modal-overlay').remove();
+        loadDevices();
+    } catch (e) {
+        showToast('更新失败: ' + e.message, 'error');
+    }
+}
+
+async function deleteDevice(id) {
+    if (!confirm('确定要删除此设备吗？相关备份记录也将被删除。')) return;
+    try {
+        await API.delete(`/api/devices/${id}`);
+        showToast('设备已删除', 'success');
+        loadDevices();
+    } catch (e) {
+        showToast('删除失败: ' + e.message, 'error');
+    }
+}
+
+function showImportModal() {
+    const modal = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal">
+                <div class="modal-header">
+                    <h3>导入设备 (CSV)</h3>
+                    <button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button>
+                </div>
+                <div class="modal-body">
+                    <p style="margin-bottom: 15px; color: #666; font-size: 13px;">
+                        CSV格式: name, ip_address, device_type, username, password, enable_password, port, group_name, company, model, function<br>
+                        多网卡/多 IP：可追加 <code>ip2, ip3, ... ip10</code> 列填写额外 IP（首个 IP 用 <code>ip_address</code> 作为主管理 IP）。
+                    </p>
+                    <input type="file" id="csvFile" accept=".csv" class="form-control">
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                    <button class="btn btn-primary" onclick="importCSV()">导入</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalContainer').innerHTML = modal;
+}
+
+async function importCSV() {
+    const fileInput = document.getElementById('csvFile');
+    if (!fileInput.files[0]) {
+        showToast('请选择CSV文件', 'warning');
+        return;
+    }
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    try {
+        const res = await fetch('/api/devices/import-csv', { method: 'POST', body: formData });
+        const result = await res.json();
+        showToast(result.message, 'success');
+        if (result.errors && result.errors.length > 0) {
+            console.log('Import errors:', result.errors);
+        }
+        document.querySelector('.modal-overlay').remove();
+        loadDevices();
+    } catch (e) {
+        showToast('导入失败: ' + e.message, 'error');
+    }
+}
+
+function exportCSV() {
+    window.location.href = '/api/devices/export/csv';
+}
+
+async function batchBackup() {
+    const ids = getSelectedIds();
+    if (ids.length === 0) { showToast('请先选择设备', 'warning'); return; }
+    if (!confirm(`确定要备份选中的 ${ids.length} 台设备吗？`)) return;
+    showLoading();
+    try {
+        const params = ids.map(id => `device_ids=${id}`).join('&');
+        const result = await API.post(`/api/backups/run?${params}`);
+        showToast(`备份完成: 成功 ${result.success_count}, 失败 ${result.failed_count}`, result.failed_count > 0 ? 'warning' : 'success');
+        loadDevices();
+    } catch (e) {
+        showToast('备份失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+async function batchDiscover() {
+    const ids = getSelectedIds();
+    if (ids.length === 0) { showToast('请先选择设备', 'warning'); return; }
+
+    // Show a confirmation dialog with auto-add option
+    const modal = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal">
+                <div class="modal-header">
+                    <h3>批量邻居发现</h3>
+                    <button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button>
+                </div>
+                <div class="modal-body">
+                    <p>将对选中的 <strong>${ids.length}</strong> 台设备执行 CDP/LLDP 邻居发现。</p>
+                    <div class="form-group" style="margin-top: 15px;">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="autoAddCheckbox" checked style="width: 18px; height: 18px;">
+                            <span>自动添加发现的设备到设备管理</span>
+                        </label>
+                        <div style="font-size: 12px; color: #666; margin-top: 6px; margin-left: 26px; padding: 8px; background: #f0f4ff; border-radius: 4px; border-left: 3px solid #4a90d9;">
+                            <strong>自动添加策略：</strong><br>
+                            1. 按设备类型自动分组（如"Cisco IOS 交换机"、"Cisco WLC 控制器"）<br>
+                            2. 优先使用"设置→凭据配置"中匹配设备类型的凭据<br>
+                            3. 未配置凭据的设备类型延用源设备的账号密码
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                    <button class="btn btn-primary" onclick="executeBatchDiscover(${JSON.stringify(ids)})">🔍 开始发现</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalContainer').innerHTML = modal;
+}
+
+async function executeBatchDiscover(ids) {
+    const autoAdd = document.getElementById('autoAddCheckbox').checked;
+    // Close the confirmation modal
+    const overlay = document.querySelector('.modal-overlay');
+    if (overlay) overlay.remove();
+
+    showLoading();
+    try {
+        const url = autoAdd ? '/api/topology/discover?auto_add=true' : '/api/topology/discover';
+        const result = await API.post(url, ids);
+
+        let msg = `发现完成: 成功 ${result.success_count}, 失败 ${result.failed_count}`;
+        if (result.auto_add) {
+            const aa = result.auto_add;
+            msg += ` | 自动添加: 新增 ${aa.added_count} 台, 已存在 ${aa.skipped_count} 台`;
+            if (aa.added_devices && aa.added_devices.length > 0) {
+                // Log detailed info including group and credential source
+                console.log('Auto-added devices:', aa.added_devices.map(d => ({
+                    name: d.name, ip: d.ip, type: d.device_type,
+                    group: d.group, credentials: d.credential_source,
+                    source: d.source_device,
+                })));
+            }
+        }
+        showToast(msg, result.failed_count > 0 ? 'warning' : 'success');
+        loadDevices();
+    } catch (e) {
+        showToast('发现失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+async function batchCollectInfo() {
+    const ids = getSelectedIds();
+    if (ids.length === 0) { showToast('请先选择设备', 'warning'); return; }
+    if (!confirm(`确定要采集选中的 ${ids.length} 台设备的信息吗？`)) return;
+    showLoading();
+    try {
+        for (const id of ids) {
+            await API.post(`/api/devices/${id}/collect-info`);
+        }
+        showToast('信息采集完成', 'success');
+        loadDevices();
+    } catch (e) {
+        showToast('采集失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+// ---- One-click connect: connect each selected device with its OWN credentials ----
+async function batchConnect() {
+    const ids = getSelectedIds();
+    if (ids.length === 0) { showToast('请先选择设备', 'warning'); return; }
+    showLoading();
+    try {
+        const result = await API.post('/api/devices/batch-connect', { device_ids: ids });
+        // Show a result modal listing per-device status (each may use different account)
+        const rows = result.results.map(r => `
+            <tr>
+                <td>${escapeHtml(r.name || '-')}</td>
+                <td><code>${escapeHtml(r.ip || '-')}</code></td>
+                <td>${r.success
+                    ? '<span class="badge badge-success">已连接</span>'
+                    : '<span class="badge badge-danger">失败</span>'}</td>
+                <td style="font-size: 12px; color: #666;">${escapeHtml(r.message)}</td>
+            </tr>
+        `).join('');
+        const modal = `
+            <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+                <div class="modal">
+                    <div class="modal-header">
+                        <h3>一键连接结果</h3>
+                        <button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button>
+                    </div>
+                    <div class="modal-body">
+                        <div style="margin-bottom: 10px;">
+                            <span class="badge badge-success">成功 ${result.success_count}</span>
+                            <span class="badge badge-danger">失败 ${result.failed_count}</span>
+                            <span class="badge badge-secondary">共 ${result.total}</span>
+                        </div>
+                        <p style="font-size: 12px; color: #666; margin-bottom: 8px;">
+                            每台设备均使用其自身保存的账号密码连接（不同设备可使用不同账号）。
+                        </p>
+                        <div class="table-container">
+                            <table class="data-table">
+                                <thead><tr><th>设备</th><th>IP</th><th>结果</th><th>详情</th></tr></thead>
+                                <tbody>${rows}</tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.getElementById('modalContainer').innerHTML = modal;
+        loadDevices();
+    } catch (e) {
+        showToast('连接失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+// ---- Apply a credential profile (different account) to selected devices in bulk ----
+async function applyProfileToSelected() {
+    const ids = getSelectedIds();
+    const profileId = document.getElementById('applyProfileSelect').value;
+    if (ids.length === 0) { showToast('请先选择设备', 'warning'); return; }
+    if (!profileId) { showToast('请先选择要应用的凭据配置', 'warning'); return; }
+    if (!confirm(`确定将所选凭据配置应用到选中的 ${ids.length} 台设备吗？将覆盖这些设备的账号密码。`)) return;
+    showLoading();
+    try {
+        const result = await API.post('/api/devices/batch-apply-profile', { device_ids: ids, profile_id: parseInt(profileId) });
+        showToast(result.message, 'success');
+        loadDevices();
+    } catch (e) {
+        showToast('应用失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+async function loadNICs(selectId, currentValue) {
+    try {
+        const data = await API.get('/api/nics');
+        const select = document.getElementById(selectId);
+        if (!select) return;
+        data.interfaces.forEach(nic => {
+            if (nic.is_up && !nic.is_loopback) {
+                const opt = document.createElement('option');
+                opt.value = nic.ip_address;
+                opt.textContent = `${nic.name} (${nic.ip_address})`;
+                if ((currentValue || data.selected_ip) === nic.ip_address) opt.selected = true;
+                select.appendChild(opt);
+            }
+        });
+    } catch (e) {
+        console.error('Failed to load NICs:', e);
+    }
+}
+
+async function testConnection(id) {
+    showToast('正在测试连接...', 'info');
+    try {
+        const result = await API.post(`/api/devices/${id}/test-connection`);
+        if (result.success) {
+            showToast(`✅ ${result.message}（源IP: ${result.source_ip}）`, 'success');
+        } else {
+            showToast(`❌ ${result.message}`, 'error');
+        }
+        loadDevices();
+    } catch (e) {
+        showToast('测试失败: ' + e.message, 'error');
+    }
+}
+
+loadGroups();
+loadCompanies();
+loadProfileOptions();
+loadDevices();
+</script>
+{% endblock %}

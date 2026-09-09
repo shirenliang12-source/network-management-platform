@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ app_name }}</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{APP_VERSION}}">
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+    <!-- Sidebar -->
+    <nav class="sidebar">
+        <div class="sidebar-header">
+            <h3>{{ app_name }}</h3>
+            <div class="version">v{{ APP_VERSION }}</div>
+            <div class="sidebar-user" id="sidebarUser" style="margin-top:10px;font-size:13px;color:#cdd;">
+                <span id="sideUsername">—</span>
+                <a href="#" id="logoutBtn" style="color:#9bf;margin-left:6px;">退出</a>
+            </div>
+        </div>
+        <div class="sidebar-nav">
+            <a href="/" id="nav-dashboard" data-module="dashboard">
+                <span class="nav-icon">📊</span> 仪表盘
+            </a>
+            <a href="/devices" id="nav-devices" data-module="devices">
+                <span class="nav-icon">📡</span> 设备管理
+            </a>
+            <a href="/topology" id="nav-topology" data-module="topology">
+                <span class="nav-icon">🌐</span> 拓扑图
+            </a>
+            <a href="/backups" id="nav-backups" data-module="backups">
+                <span class="nav-icon">💾</span> 配置备份
+            </a>
+            <a href="/changes" id="nav-changes" data-module="backups">
+                <span class="nav-icon">🔀</span> 配置变更
+            </a>
+            <a href="/ip-inventory" id="nav-ip" data-module="ip_inventory">
+                <span class="nav-icon">🗂️</span> IP地址清单
+            </a>
+            <a href="/ipam" id="nav-ipam" data-module="ipam">
+                <span class="nav-icon">🌳</span> IP地址规划
+            </a>
+            <a href="/datacenter" id="nav-datacenter" data-module="dc">
+                <span class="nav-icon">🗄️</span> 数据中心
+            </a>
+            <a href="/assets" id="nav-assets" data-module="assets">
+                <span class="nav-icon">📦</span> 其他资产
+            </a>
+            <a href="/servers" id="nav-servers" data-module="servers">
+                <span class="nav-icon">🖥️</span> 服务器存储
+            </a>
+            <a href="/vms" id="nav-vms" data-module="vms">
+                <span class="nav-icon">💻</span> 虚拟机系统
+            </a>
+            <a href="/integrations" id="nav-integrations" data-module="integrations">
+                <span class="nav-icon">🔗</span> 平台集成
+            </a>
+            <a href="/accounts" id="nav-accounts" data-module="accounts">
+                <span class="nav-icon">🔑</span> 账号密码
+            </a>
+            <a href="/schedule" id="nav-schedule" data-module="schedule">
+                <span class="nav-icon">⏰</span> 定时任务
+            </a>
+            <a href="/system/logs" id="nav-logs" data-module="logs">
+                <span class="nav-icon">🪵</span> 系统日志
+            </a>
+            <a href="/settings" id="nav-settings" data-module="settings">
+                <span class="nav-icon">⚙️</span> 设置
+            </a>
+        </div>
+    </nav>
+
+    <!-- Main content -->
+    <div class="main-content">
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Loading overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner-lg"></div>
+    </div>
+
+    <!-- Toast container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Modal container -->
+    <div id="modalContainer"></div>
+
+    <script src="/static/js/app.js?v={{APP_VERSION}}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

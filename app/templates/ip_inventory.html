@@ -1,0 +1,358 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>IP 地址清单</h1>
+    <div>
+        <button class="btn btn-outline" onclick="exportCSV()">📥 导出CSV</button>
+        <button class="btn btn-outline" onclick="showImportModal()">📤 导入CSV</button>
+        <button class="btn btn-primary" onclick="showAddModal()">➕ 新增IP段</button>
+    </div>
+</div>
+
+<div class="search-bar">
+    <input type="text" class="form-control" id="searchInput" placeholder="搜索 Firewall / Subnet / Company / IP subnet / Mask / VLAN ID / Zone / 备注..." oninput="loadItems()">
+    <select class="form-control" id="companyFilter" style="width: 160px;" onchange="loadItems()">
+        <option value="">全部公司</option>
+    </select>
+    <span style="color:#888; align-self:center; white-space:nowrap;" id="totalCount"></span>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th style="width:110px;">排序</th>
+                        <th>Firewall</th>
+                        <th>Subnet</th>
+                        <th>Company</th>
+                        <th>IP subnet</th>
+                        <th>Mask</th>
+                        <th>VLAN ID</th>
+                        <th>Zone/Interface Name</th>
+                        <th>备注</th>
+                        <th>关联设备</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="ipTableBody">
+                    <tr><td colspan="11" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let items = [];
+
+async function loadCompanies() {
+    try {
+        const companies = await API.get('/api/ip-inventory/companies');
+        const select = document.getElementById('companyFilter');
+        companies.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c.company;
+            opt.textContent = `${c.company} (${c.count})`;
+            select.appendChild(opt);
+        });
+    } catch (e) { console.error(e); }
+}
+
+async function loadItems() {
+    const search = document.getElementById('searchInput').value;
+    const company = document.getElementById('companyFilter').value;
+    let url = '/api/ip-inventory?';
+    if (search) url += `search=${encodeURIComponent(search)}&`;
+    if (company) url += `company=${encodeURIComponent(company)}&`;
+    try {
+        items = await API.get(url);
+        renderTable();
+    } catch (e) {
+        document.getElementById('ipTableBody').innerHTML =
+            `<tr><td colspan="11" class="empty-state">加载失败：${escapeHtml(e.message)}</td></tr>`;
+        showToast('加载IP清单失败: ' + e.message, 'error');
+    }
+}
+
+function cell(text) {
+    return text ? escapeHtml(text) : '<span style="color:#999;">-</span>';
+}
+
+function renderTable() {
+    const body = document.getElementById('ipTableBody');
+    document.getElementById('totalCount').textContent = `共 ${items.length} 条`;
+    if (items.length === 0) {
+        body.innerHTML = `<tr><td colspan="11" class="empty-state">暂无数据，点击右上角"新增IP段"添加</td></tr>`;
+        return;
+    }
+    body.innerHTML = items.map(it => `
+        <tr>
+            <td style="text-align:center; white-space:nowrap;">
+                <span class="badge badge-secondary">${it.sort_order}</span>
+                <button class="btn btn-sm btn-outline" title="上移" onclick="moveItem(${it.id},'up')">▲</button>
+                <button class="btn btn-sm btn-outline" title="下移" onclick="moveItem(${it.id},'down')">▼</button>
+            </td>
+            <td>${cell(it.firewall)}</td>
+            <td><code>${cell(it.subnet)}</code></td>
+            <td>${it.company ? `<span class="badge badge-secondary">${escapeHtml(it.company)}</span>` : '<span style="color:#999;">-</span>'}</td>
+            <td><code>${cell(it.ip_segment)}</code></td>
+            <td><code>${cell(it.mask)}</code></td>
+            <td>${cell(it.vlan)}</td>
+            <td>${cell(it.zone_interface_name)}</td>
+            <td style="max-width:240px; word-break:break-all;">${cell(it.remarks)}</td>
+            <td>${renderInvDeviceCell(it)}</td>
+            <td>
+                <button class="btn btn-sm btn-outline" onclick="showEditModal(${it.id})">编辑</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteItem(${it.id})">删除</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function renderInvDeviceCell(it){
+    if(!it.device_name && !(it.device_ips && it.device_ips.length)) return '-';
+    let html = `<div><span class="badge badge-secondary">${escapeHtml(it.device_name||'')}</span>`;
+    if(it.reverse_linked) html += ' <span class="badge badge-info" title="由 IP 反查关联到的设备">反查</span>';
+    html += '</div>';
+    if(it.device_ips && it.device_ips.length){
+        html += '<div style="margin-top:3px;">' + it.device_ips.map(e=>`<code style="margin-right:4px;display:inline-block;${e.is_primary?'font-weight:600;':''}">${escapeHtml(e.ip)}${e.is_primary?' <span style=\'font-size:10px;color:#888;\'>(主)</span>':''}</code>`).join('') + '</div>';
+    }
+    return html;
+}
+async function showAddModal() {
+    let devOpts = '<option value="">（无）</option>';
+    try {
+        const devices = await API.get('/api/ip-inventory/devices');
+        devOpts += devices.map(d=>`<option value="${d.id}">${escapeHtml(d.name)} (${escapeHtml((d.ip_addresses&&d.ip_addresses.length)?d.ip_addresses.join(', '):d.ip_address)})</option>`).join('');
+    } catch(e){}
+    const modal = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal">
+                <div class="modal-header">
+                    <h3>新增IP段</h3>
+                    <button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group"><label>Firewall</label><input type="text" class="form-control" id="add-firewall" placeholder="如 FW-01 / Palo Alto-DC1"></div>
+                    <div class="form-group"><label>Subnet</label><input type="text" class="form-control" id="add-subnet" placeholder="如 10.0.1.0/24"></div>
+                    <div class="form-group"><label>Company</label><input type="text" class="form-control" id="add-company" placeholder="如 甲公司 / 总部"></div>
+                    <div class="form-group"><label>IP subnet</label><input type="text" class="form-control" id="add-ip_segment" placeholder="如 10.0.1.0-10.0.1.255"></div>
+                    <div class="form-group"><label>Mask</label><input type="text" class="form-control" id="add-mask" placeholder="如 255.255.255.0"></div>
+                    <div class="form-group"><label>VLAN ID</label><input type="text" class="form-control" id="add-vlan" placeholder="如 10"></div>
+                    <div class="form-group"><label>Zone/Interface Name</label><input type="text" class="form-control" id="add-zone_interface_name" placeholder="如 Trust / inside / VLAN10"></div>
+                    <div class="form-group"><label>关联设备（可选，自动带出资产序列号）</label><select class="form-control" id="add-device_id">${devOpts}</select></div>
+                    <div class="form-group"><label>排序 (数字越小越靠前，留空=置底)</label><input type="number" class="form-control" id="add-sort_order" placeholder="如 10"></div>
+                    <div class="form-group"><label>备注</label><textarea class="form-control" id="add-remarks" rows="3" placeholder="补充说明..."></textarea></div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                    <button class="btn btn-primary" onclick="submitAdd()">保存</button>
+                </div>
+            </div>
+        </div>`;
+    document.getElementById('modalContainer').innerHTML = modal;
+}
+
+async function submitAdd() {
+    const data = {
+        firewall: document.getElementById('add-firewall').value.trim(),
+        subnet: document.getElementById('add-subnet').value.trim(),
+        company: document.getElementById('add-company').value.trim(),
+        ip_segment: document.getElementById('add-ip_segment').value.trim(),
+        mask: document.getElementById('add-mask').value.trim(),
+        vlan: document.getElementById('add-vlan').value.trim(),
+        zone_interface_name: document.getElementById('add-zone_interface_name').value.trim(),
+        remarks: document.getElementById('add-remarks').value.trim(),
+        device_id: parseInt(document.getElementById('add-device_id').value) || null,
+    };
+    const addSo = document.getElementById('add-sort_order').value.trim();
+    if (addSo !== '') data.sort_order = parseInt(addSo, 10);
+    try {
+        await API.post('/api/ip-inventory', data);
+        showToast('已新增IP段', 'success');
+        document.querySelector('.modal-overlay').remove();
+        loadItems();
+        loadCompanies();
+    } catch (e) {
+        showToast('新增失败: ' + e.message, 'error');
+    }
+}
+
+async function showEditModal(id) {
+    try {
+        const it = await API.get(`/api/ip-inventory/${id}`);
+        let devOpts = '<option value="">（无）</option>';
+        try {
+            const devices = await API.get('/api/ip-inventory/devices');
+            devOpts += devices.map(d=>`<option value="${d.id}">${escapeHtml(d.name)} (${escapeHtml((d.ip_addresses&&d.ip_addresses.length)?d.ip_addresses.join(', '):d.ip_address)})</option>`).join('');
+        } catch(e){}
+        const modal = `
+            <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+                <div class="modal">
+                    <div class="modal-header">
+                        <h3>编辑IP段</h3>
+                        <button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group"><label>Firewall</label><input type="text" class="form-control" id="edit-firewall" value="${escapeHtml(it.firewall || '')}"></div>
+                        <div class="form-group"><label>Subnet</label><input type="text" class="form-control" id="edit-subnet" value="${escapeHtml(it.subnet || '')}"></div>
+                        <div class="form-group"><label>Company</label><input type="text" class="form-control" id="edit-company" value="${escapeHtml(it.company || '')}"></div>
+                        <div class="form-group"><label>IP subnet</label><input type="text" class="form-control" id="edit-ip_segment" value="${escapeHtml(it.ip_segment || '')}"></div>
+                        <div class="form-group"><label>Mask</label><input type="text" class="form-control" id="edit-mask" value="${escapeHtml(it.mask || '')}"></div>
+                        <div class="form-group"><label>VLAN ID</label><input type="text" class="form-control" id="edit-vlan" value="${escapeHtml(it.vlan || '')}"></div>
+                        <div class="form-group"><label>Zone/Interface Name</label><input type="text" class="form-control" id="edit-zone_interface_name" value="${escapeHtml(it.zone_interface_name || '')}"></div>
+                        <div class="form-group"><label>排序 (数字越小越靠前)</label><input type="number" class="form-control" id="edit-sort_order" value="${it.sort_order ?? 0}"></div>
+                        <div class="form-group"><label>备注</label><textarea class="form-control" id="edit-remarks" rows="3">${escapeHtml(it.remarks || '')}</textarea></div>
+                        <div class="form-group"><label>关联设备（可选，自动带出资产序列号）</label><select class="form-control" id="edit-device_id">${devOpts}</select></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                        <button class="btn btn-primary" onclick="submitEdit(${id})">保存</button>
+                    </div>
+                </div>
+            </div>`;
+        document.getElementById('modalContainer').innerHTML = modal;
+        if(it.device_id) { const sel=document.getElementById('edit-device_id'); if(sel) sel.value=String(it.device_id); }
+    } catch (e) {
+        showToast('加载信息失败: ' + e.message, 'error');
+    }
+}
+
+async function submitEdit(id) {
+    const data = {
+        firewall: document.getElementById('edit-firewall').value.trim(),
+        subnet: document.getElementById('edit-subnet').value.trim(),
+        company: document.getElementById('edit-company').value.trim(),
+        ip_segment: document.getElementById('edit-ip_segment').value.trim(),
+        mask: document.getElementById('edit-mask').value.trim(),
+        vlan: document.getElementById('edit-vlan').value.trim(),
+        zone_interface_name: document.getElementById('edit-zone_interface_name').value.trim(),
+        remarks: document.getElementById('edit-remarks').value.trim(),
+        device_id: parseInt(document.getElementById('edit-device_id').value) || null,
+    };
+    const editSo = document.getElementById('edit-sort_order').value.trim();
+    if (editSo !== '') data.sort_order = parseInt(editSo, 10);
+    try {
+        await API.put(`/api/ip-inventory/${id}`, data);
+        showToast('已保存', 'success');
+        document.querySelector('.modal-overlay').remove();
+        loadItems();
+        loadCompanies();
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'error');
+    }
+}
+
+async function deleteItem(id) {
+    if (!confirm('确定删除该IP段记录吗？')) return;
+    try {
+        await API.delete(`/api/ip-inventory/${id}`);
+        showToast('已删除', 'success');
+        loadItems();
+        loadCompanies();
+    } catch (e) {
+        showToast('删除失败: ' + e.message, 'error');
+    }
+}
+
+async function moveItem(id, direction) {
+    try {
+        await API.post(`/api/ip-inventory/${id}/move`, { direction });
+        loadItems();
+    } catch (e) {
+        showToast('调整顺序失败: ' + e.message, 'error');
+    }
+}
+
+function exportCSV() {
+    const header = ['排序', 'Firewall', 'Subnet', 'Company', 'IP subnet', 'Mask', 'VLAN ID', 'Zone/Interface Name', '备注'];
+    const rows = items.map(it => [
+        it.sort_order, it.firewall, it.subnet, it.company, it.ip_segment, it.mask, it.vlan, it.zone_interface_name, it.remarks
+    ]);
+    const escape = v => {
+        const s = (v || '').toString();
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const csv = [header, ...rows].map(r => r.map(escape).join(',')).join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'ip_inventory.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+}
+
+function showImportModal() {
+    const modal = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal">
+                <div class="modal-header">
+                    <h3>导入CSV</h3>
+                    <button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button>
+                </div>
+                <div class="modal-body">
+                    <p style="color:#666;margin-top:0;">支持按当前表头导入：排序, Firewall, Subnet, Company, IP subnet, Mask, VLAN ID, Zone/Interface Name, 备注。表头自动识别，列顺序不限。建议先用「导出CSV」下载模板。</p>
+                    <div class="form-group">
+                        <label>选择 CSV 文件</label>
+                        <input type="file" class="form-control" id="importFile" accept=".csv,text/csv" onchange="onImportFileSelected(this)">
+                    </div>
+                    <div id="importPreview" style="color:#666;font-size:13px;"></div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                    <button class="btn btn-primary" id="importConfirmBtn" onclick="doImport()" disabled>确认导入</button>
+                </div>
+            </div>
+        </div>`;
+    document.getElementById('modalContainer').innerHTML = modal;
+    window.__importCsvText = "";
+}
+
+function onImportFileSelected(input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function (e) {
+        window.__importCsvText = e.target.result || "";
+        const lines = window.__importCsvText.split(/\r?\n/).filter(l => l.trim() !== "");
+        const preview = document.getElementById('importPreview');
+        if (lines.length <= 1) {
+            preview.textContent = "文件为空或只有表头，没有可导入的数据行。";
+            document.getElementById('importConfirmBtn').disabled = true;
+            return;
+        }
+        preview.textContent = `已读取 ${lines.length - 1} 行数据（含表头），点「确认导入」开始。`;
+        document.getElementById('importConfirmBtn').disabled = false;
+    };
+    reader.readAsText(file, "UTF-8");
+}
+
+async function doImport() {
+    const csvText = window.__importCsvText || "";
+    if (!csvText.trim()) {
+        showToast('请先选择要导入的 CSV 文件', 'error');
+        return;
+    }
+    const btn = document.getElementById('importConfirmBtn');
+    btn.disabled = true;
+    try {
+        const res = await API.post('/api/ip-inventory/import', { csv: csvText });
+        const msg = `导入完成：新增 ${res.created} 条，跳过 ${res.skipped} 行${res.errors && res.errors.length ? '，'+res.errors.length+' 行出错' : ''}`;
+        showToast(msg, res.created > 0 ? 'success' : 'warning');
+        document.querySelector('.modal-overlay').remove();
+        loadItems();
+        loadCompanies();
+    } catch (e) {
+        showToast('导入失败: ' + e.message, 'error');
+        btn.disabled = false;
+    }
+}
+
+loadCompanies();
+loadItems();
+</script>
+{% endblock %}

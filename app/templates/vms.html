@@ -1,0 +1,525 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>🟢 虚拟机清单</h1>
+    <div>
+        <button class="btn btn-outline" onclick="downloadVmTemplate()">⬇ 下载模板</button>
+        <button class="btn btn-outline" onclick="showImportVmModal()">⬆ 导入</button>
+        <button class="btn btn-outline" onclick="exportVms()">⬇ 导出</button>
+        <button class="btn btn-primary" onclick="showAddVmModal()">＋ 新增虚拟机</button>
+    </div>
+</div>
+
+<!-- Summary stats -->
+<div class="stats-grid" id="vmStatsGrid" style="grid-template-columns: repeat(5, 1fr);">
+    <div class="stat-card">
+        <div class="stat-icon green">🟢</div>
+        <div><div class="stat-value" id="vm-total">-</div><div class="stat-label">虚拟机总数</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon blue">🪟</div>
+        <div><div class="stat-value" id="vm-win">-</div><div class="stat-label">Windows</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon purple">🐧</div>
+        <div><div class="stat-value" id="vm-linux">-</div><div class="stat-label">Linux</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon indigo">▶️</div>
+        <div><div class="stat-value" id="vm-running">-</div><div class="stat-label">运行中</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon orange">🛑</div>
+        <div><div class="stat-value" id="vm-off">-</div><div class="stat-label">已关机</div></div>
+    </div>
+</div>
+
+<!-- Filters + table -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        🟢 虚拟机列表
+        <span style="font-size: 13px; font-weight: normal;">
+            <select class="form-control" id="filterHost" onchange="loadVms()" style="display:inline-block;width:auto;">
+                <option value="">全部宿主机</option>
+            </select>
+            <select class="form-control" id="filterOs" onchange="loadVms()" style="display:inline-block;width:auto;">
+                <option value="">全部系统</option>
+                <option value="Windows">Windows</option>
+                <option value="Linux">Linux</option>
+                <option value="其他">其他</option>
+            </select>
+            <select class="form-control" id="filterStatus" onchange="loadVms()" style="display:inline-block;width:auto;">
+                <option value="">全部状态</option>
+                <option value="运行中">运行中</option>
+                <option value="已关机">已关机</option>
+                <option value="挂起">挂起</option>
+                <option value="模板">模板</option>
+                <option value="其他">其他</option>
+            </select>
+            <input type="text" class="form-control" id="filterSearch" placeholder="搜索名称/功能/宿主/IP/资源..." oninput="loadVms()" style="display:inline-block;width:auto;min-width:220px;">
+        </span>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>服务器名称</th>
+                        <th>功能 / 用途</th>
+                        <th>操作系统</th>
+                        <th>主IP / 多IP</th>
+                        <th>资源（CPU / 内存 / 磁盘）</th>
+                        <th>磁盘数 / 明细</th>
+                        <th>存储 LUN</th>
+                        <th>宿主机</th>
+                        <th>状态</th>
+                        <th style="min-width: 130px;">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="vmBody">
+                    <tr><td colspan="10" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const VM_OS_TYPES = ["Windows", "Linux", "其他"];
+const VM_STATUSES = ["运行中", "已关机", "挂起", "模板", "其他"];
+const VM_SYNC_LOCK_OPTIONS = [
+    ['name','名称'],['function','功能/用途'],['os_type','系统类型'],['os_version','系统版本'],
+    ['status','运行状态'],['host_name','宿主机'],['management_ip','管理 IP'],
+    ['additional_ips','附加 IP'],['cpu','CPU'],['memory','内存'],['disk_size','磁盘总量'],
+    ['disk_count','磁盘数量'],['disks','磁盘明细'],['storage_lun','存储 LUN'],
+];
+const OS_ICON = { 'Windows':'🪟', 'Linux':'🐧', '其他':'💻' };
+
+let HOSTS = [];   // 服务器存储列表（宿主机候选）
+
+function vmStatusBadge(s) {
+    const map = {
+        '运行中':'<span class="badge badge-success">运行中</span>',
+        '已关机':'<span class="badge badge-secondary">已关机</span>',
+        '挂起':'<span class="badge badge-warning">挂起</span>',
+        '模板':'<span class="badge badge-info">模板</span>',
+        '其他':'<span class="badge badge-secondary">其他</span>',
+    };
+    return map[s] || `<span class="badge badge-secondary">${escapeHtml(s||'')}</span>`;
+}
+
+// 加载「服务器存储」作为宿主机候选
+async function loadHosts() {
+    try {
+        HOSTS = await API.get('/api/assets/servers');
+        const opts = '<option value="">（无宿主机 / 物理机直装）</option>' +
+            HOSTS.map(h => `<option value="${h.id}">${escapeHtml((h.rack_number ? h.rack_number + ' / ' : '') + h.name)}</option>`).join('');
+        document.getElementById('filterHost').innerHTML = '<option value="">全部宿主机</option>' + HOSTS.map(h => `<option value="${h.id}">${escapeHtml((h.rack_number ? h.rack_number + ' / ' : '') + h.name)}</option>`).join('');
+        return opts;
+    } catch (e) { console.error(e); return '<option value="">（无宿主机）</option>'; }
+}
+
+async function loadSummary() {
+    try {
+        const s = await API.get('/api/vms/summary');
+        document.getElementById('vm-total').textContent = s.total;
+        document.getElementById('vm-win').textContent = (s.by_os_type['Windows'] || 0);
+        document.getElementById('vm-linux').textContent = (s.by_os_type['Linux'] || 0);
+        document.getElementById('vm-running').textContent = (s.by_status['运行中'] || 0);
+        document.getElementById('vm-off').textContent = (s.by_status['已关机'] || 0);
+    } catch (e) { console.error(e); }
+}
+
+async function loadVms() {
+    try {
+        const params = new URLSearchParams();
+        const host = document.getElementById('filterHost').value;
+        const os = document.getElementById('filterOs').value;
+        const status = document.getElementById('filterStatus').value;
+        const search = document.getElementById('filterSearch').value.trim();
+        if (host) params.set('host_id', host);
+        if (os) params.set('os_type', os);
+        if (status) params.set('status', status);
+        if (search) params.set('search', search);
+        const items = await API.get('/api/vms?' + params.toString());
+        const body = document.getElementById('vmBody');
+        if (items.length === 0) {
+            body.innerHTML = '<tr><td colspan="10" class="empty-state">🟢 暂无虚拟机，点击右上角「新增虚拟机」录入</td></tr>';
+            return;
+        }
+        body.innerHTML = items.map(v => `
+            <tr>
+                <td><strong>${escapeHtml(v.name)}</strong>${vmSyncBadge(v)}${v.last_synced_at ? `<br><small style="color:#888;">同步 ${formatDateTime(v.last_synced_at)}</small>` : ''}</td>
+                <td>${escapeHtml(v.function || '-')}</td>
+                <td>${(OS_ICON[v.os_type]||'💻')} ${escapeHtml(v.os_type||'-')}${v.os_version ? '<br><span style="color:#888;font-size:12px;">'+escapeHtml(v.os_version)+'</span>' : ''}</td>
+                <td>${renderVmIps(v)}</td>
+                <td><code>${escapeHtml(v.cpu||'-')}</code> · <code>${escapeHtml(v.memory||'-')}</code> · <code>${escapeHtml(v.disk_size||'-')}</code></td>
+                <td style="text-align:center;">${renderVmDisks(v)}</td>
+                <td style="font-size:12px;">${v.storage_lun ? escapeHtml(v.storage_lun) : '<span style="color:#ccc;">—</span>'}${(v.storage_assets||[]).length ? `<br><span class="badge badge-info">关联 ${(v.storage_assets||[]).length} 个存储</span>` : ''}</td>
+                <td>${v.host_id ? `<a href="/servers" title="关联宿主机">${escapeHtml(v.host_name||('宿主机#'+v.host_id))}</a>` : escapeHtml(v.host_name||'—')}</td>
+                <td>${vmStatusBadge(v.status)}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline" onclick="editVm(${v.id})">编辑</button>
+                    ${['stale','stale_confirmed'].includes(v.sync_state) ? `<button class="btn btn-sm btn-warning" onclick="manageStaleVm(${v.id},'confirm')">确认失联</button><button class="btn btn-sm btn-outline" onclick="manageStaleVm(${v.id},'detach')">转为手工</button>` : ''}
+                    <button class="btn btn-sm btn-danger" onclick="deleteVm(${v.id})">删除</button>
+                </td>
+            </tr>`).join('');
+    } catch (e) {
+        showToast('加载失败: ' + e.message, 'error');
+    }
+}
+
+function vmSyncBadge(v) {
+    if (!v.source_type || v.source_type === 'manual') return '<br><span class="badge badge-secondary">手工</span>';
+    const source = `<span class="badge badge-info">${escapeHtml(v.source_type)}</span>`;
+    if (v.sync_state === 'stale') return `<br>${source} <span class="badge badge-warning">待确认失联</span>`;
+    if (v.sync_state === 'stale_confirmed') return `<br>${source} <span class="badge badge-danger">已确认失联</span>`;
+    return `<br>${source} <span class="badge badge-success">同步正常</span>`;
+}
+
+async function manageStaleVm(id, action) {
+    const message = action === 'detach'
+        ? '解除外部关联并转为手工维护？本地虚拟机记录不会删除。'
+        : '确认该虚拟机已从外部平台失联？本地记录仍会保留。';
+    if (!confirm(message)) return;
+    try {
+        await API.post(`/api/integrations/vms/${id}/stale`, {action});
+        showToast(action === 'detach' ? '已转为手工维护' : '已确认失联', 'success');
+        loadVms();
+    } catch (error) {
+        showToast('操作失败：' + error.message, 'error');
+    }
+}
+
+function renderVmIps(v) {
+    const extras = (v.additional_ips || []).map(x => x.ip_address);
+    if (!extras.length) return `<code>${escapeHtml(v.management_ip || '-')}</code>`;
+    return `<code>${escapeHtml(v.management_ip || '')}</code> ` +
+           `<span class="badge badge-secondary">+${extras.length}</span>`;
+}
+
+// 磁盘数列：数量 + 每块磁盘的名称/大小明细
+function renderVmDisks(v) {
+    const cnt = v.disk_count || 1;
+    const disks = (v.disks || []).filter(d => (d.name || '').trim() || (d.size || '').trim());
+    if (!disks.length) return `<strong>${cnt}</strong>`;
+    const detail = disks.map(d => `${escapeHtml(d.name || '磁盘')}: ${escapeHtml(d.size || '-')}`)
+        .join('<br>');
+    return `<strong>${disks.length}</strong><br><span style="color:#888;font-size:12px;text-align:left;">${detail}</span>`;
+}
+
+function collectVmExtraIps() {
+    const out = [];
+    for (let i = 2; i <= 10; i++) {
+        const el = document.getElementById(`vm-ip${i}`);
+        if (el && el.value.trim()) out.push(el.value.trim());
+    }
+    return out;
+}
+
+// ---------- 磁盘明细（每块磁盘可命名 + 填写大小） ----------
+function collectDiskRows() {
+    const rows = document.querySelectorAll('#vm-disk-rows .vm-disk-row');
+    return Array.from(rows).map(r => ({
+        name: r.querySelector('.vm-disk-name').value,
+        size: r.querySelector('.vm-disk-size').value,
+    }));
+}
+
+function renderDiskRows(disks) {
+    const box = document.getElementById('vm-disk-rows');
+    if (!box) return;
+    if (!disks.length) {
+        box.innerHTML = '<div style="font-size:12px;color:#ccc;">（无磁盘明细，输入数量或点击「＋ 加一块」）</div>';
+        return;
+    }
+    box.innerHTML = disks.map((d, i) => `
+        <div class="vm-disk-row" style="display:flex;gap:8px;margin-bottom:6px;align-items:center;">
+            <span style="font-size:12px;color:#888;width:50px;flex:none;">磁盘 ${i+1}</span>
+            <input type="text" class="form-control vm-disk-name" value="${escapeHtml(d.name||'')}" placeholder="磁盘名称（如 系统盘 / 数据盘）" style="flex:1;">
+            <input type="text" class="form-control vm-disk-size" value="${escapeHtml(d.size||'')}" placeholder="大小（如 100 GB）" style="flex:0.55;">
+            <button type="button" class="btn btn-sm btn-outline" title="删除该磁盘" onclick="removeDiskRow(${i})">✕</button>
+        </div>`).join('');
+}
+
+// 数量输入变化 -> 明细行自动增减（保留已填内容）
+function syncDiskRows() {
+    const el = document.getElementById('vm-disk-count');
+    if (!el) return;
+    let n = parseInt(el.value, 10);
+    if (isNaN(n) || n < 0) n = 0;
+    if (n > 99) { n = 99; el.value = n; }
+    let disks = collectDiskRows();
+    while (disks.length < n) disks.push({ name: '', size: '' });
+    renderDiskRows(disks.slice(0, n));
+}
+
+function addDiskRow() {
+    const el = document.getElementById('vm-disk-count');
+    const n = Math.min(99, (parseInt(el.value, 10) || 0) + 1);
+    el.value = n;
+    const disks = collectDiskRows();
+    disks.push({ name: '', size: '' });
+    renderDiskRows(disks);
+    const rows = document.querySelectorAll('#vm-disk-rows .vm-disk-row');
+    if (rows.length) rows[rows.length - 1].querySelector('.vm-disk-name').focus();
+}
+
+function removeDiskRow(i) {
+    const disks = collectDiskRows();
+    disks.splice(i, 1);
+    document.getElementById('vm-disk-count').value = disks.length;
+    renderDiskRows(disks);
+}
+
+// 弹窗注入 DOM 后初始化磁盘明细行（编辑时回显已有明细；无明细按数量生成空行）
+function initDiskRows(v) {
+    const cnt = document.getElementById('vm-disk-count');
+    const existing = (v && v.disks && v.disks.length)
+        ? v.disks.map(d => ({ name: d.name || '', size: d.size || '' }))
+        : null;
+    if (existing) {
+        cnt.value = existing.length;
+        renderDiskRows(existing);
+    } else {
+        const n = parseInt(cnt.value, 10) || 1;
+        renderDiskRows(Array.from({ length: n }, () => ({ name: '', size: '' })));
+    }
+}
+
+// ---------- VM modal ----------
+function vmModalHTML(title, v, hostOpts) {
+    v = v || {};
+    const extras = (v.additional_ips || []).map(x => x.ip_address);
+    const osOpts = VM_OS_TYPES.map(x => `<option value="${x}" ${(v.os_type||'Linux')===x?'selected':''}>${x}</option>`).join('');
+    const statusOpts = VM_STATUSES.map(x => `<option value="${x}" ${(v.status||'运行中')===x?'selected':''}>${x}</option>`).join('');
+    const selHost = v.host_id || '';
+    const locked = new Set(v.sync_locked_fields || []);
+    const syncProtection = v.source_type && v.source_type !== 'manual' ? `
+        <div class="form-group" style="padding:10px;border:1px solid #d8e5f2;border-radius:6px;background:#f7fbff;">
+            <label>手工保护字段 <span style="font-weight:normal;color:#667;font-size:12px;">（选中后 ${escapeHtml(v.source_type)} 同步不会覆盖）</span></label>
+            <div style="display:flex;gap:10px 16px;flex-wrap:wrap;margin-top:7px;">
+                ${VM_SYNC_LOCK_OPTIONS.map(([key,label]) => `<label style="font-weight:normal;"><input type="checkbox" class="vm-sync-lock" value="${key}" ${locked.has(key)?'checked':''}> ${label}</label>`).join('')}
+            </div>
+        </div>` : '';
+    return `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal" style="max-width:720px;"><div class="modal-header"><h3>${title}</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+            <div class="modal-body">
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1.4;"><label>服务器名称 *</label><input type="text" class="form-control" id="vm-name" value="${escapeHtml(v.name||'')}" placeholder="如 VM-WEB-01"></div>
+                    <div class="form-group" style="flex:1;"><label>功能 / 用途</label><input type="text" class="form-control" id="vm-function" value="${escapeHtml(v.function||'')}" placeholder="如 Web服务器 / 数据库"></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>操作系统类型</label><select class="form-control" id="vm-os">${osOpts}</select></div>
+                    <div class="form-group" style="flex:1.4;"><label>系统版本</label><input type="text" class="form-control" id="vm-osver" value="${escapeHtml(v.os_version||'')}" placeholder="如 Windows Server 2019 / CentOS 7.9"></div>
+                    <div class="form-group" style="flex:1;"><label>运行状态</label><select class="form-control" id="vm-status">${statusOpts}</select></div>
+                </div>
+                <div class="form-group"><label>宿主机（关联「服务器存储」模块）</label><select class="form-control" id="vm-host" onchange="syncVmHostName()">${hostOpts}</select></div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>宿主机名称（可手填）</label><input type="text" class="form-control" id="vm-hostname" value="${escapeHtml(v.host_name||'')}" placeholder="如 ESXi-01 / 关联宿主机带出"></div>
+                    <div class="form-group" style="flex:1;"><label>主管理 IP</label><input type="text" class="form-control" id="vm-ip" value="${escapeHtml(v.management_ip||'')}"></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>额外 IP（多网卡）</label><input type="text" class="form-control" id="vm-ip2" value="${escapeHtml(extras[0]||'')}" placeholder="额外 IP 2（可选）"></div>
+                    <div class="form-group" style="flex:1;"><label>&nbsp;</label><input type="text" class="form-control" id="vm-ip3" value="${escapeHtml(extras[1]||'')}" placeholder="额外 IP 3（可选）"></div>
+                    <div class="form-group" style="flex:1;"><label>&nbsp;</label><input type="text" class="form-control" id="vm-ip4" value="${escapeHtml(extras[2]||'')}" placeholder="额外 IP 4（可选）"></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>CPU</label><input type="text" class="form-control" id="vm-cpu" value="${escapeHtml(v.cpu||'')}" placeholder="如 4 vCPU"></div>
+                    <div class="form-group" style="flex:1;"><label>内存</label><input type="text" class="form-control" id="vm-mem" value="${escapeHtml(v.memory||'')}" placeholder="如 8 GB"></div>
+                    <div class="form-group" style="flex:1;"><label>磁盘大小（总量）</label><input type="text" class="form-control" id="vm-disk" value="${escapeHtml(v.disk_size||'')}" placeholder="如 200 GB"></div>
+                </div>
+                <div class="form-group">
+                    <label>磁盘数量与明细 <span style="font-weight:normal;color:#888;font-size:12px;">（每块磁盘可命名并填写大小）</span></label>
+                    <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;">
+                        <input type="number" class="form-control" id="vm-disk-count" value="${(v.disks&&v.disks.length)?v.disks.length:(v.disk_count||1)}" min="0" max="99" style="width:90px;" onchange="syncDiskRows()" oninput="syncDiskRows()">
+                        <span style="font-size:13px;color:#888;">块磁盘（修改后自动增减下方明细行）</span>
+                        <button type="button" class="btn btn-sm btn-outline" onclick="addDiskRow()">＋ 加一块</button>
+                    </div>
+                    <div id="vm-disk-rows"></div>
+                </div>
+                <div class="form-group"><label>存储 LUN 信息</label><input type="text" class="form-control" id="vm-storage-lun" value="${escapeHtml(v.storage_lun||'')}" placeholder="如 LUN0:100GB(datastore1), LUN1:200GB(datastore2)"></div>
+                <div class="form-group"><label>备注</label><textarea class="form-control" id="vm-notes" rows="2">${escapeHtml(v.notes||'')}</textarea></div>
+                ${syncProtection}
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                <button class="btn btn-primary" onclick="${v.id ? 'submitEditVm('+v.id+')' : 'submitAddVm()'}">保存</button>
+            </div></div></div>`;
+}
+
+// 选定宿主机后，自动把宿主机名称带出到「宿主机名称」输入框
+function syncVmHostName() {
+    const sel = document.getElementById('vm-host');
+    const nameEl = document.getElementById('vm-hostname');
+    if (!sel || !nameEl) return;
+    const id = sel.value;
+    if (id) {
+        const h = HOSTS.find(x => String(x.id) === String(id));
+        if (h) nameEl.value = h.name || '';
+    }
+}
+
+async function showAddVmModal() {
+    const hostOpts = await loadHosts();
+    document.getElementById('modalContainer').innerHTML = vmModalHTML('新增虚拟机', {}, hostOpts);
+    initDiskRows({});
+}
+
+function collectVm() {
+    const hostEl = document.getElementById('vm-host');
+    const hostId = hostEl ? hostEl.value : '';
+    const diskRows = collectDiskRows();
+    const result = {
+        name: document.getElementById('vm-name').value.trim(),
+        function: document.getElementById('vm-function').value.trim(),
+        os_type: document.getElementById('vm-os').value,
+        os_version: document.getElementById('vm-osver').value.trim(),
+        status: document.getElementById('vm-status').value,
+        host_id: hostId ? parseInt(hostId, 10) : null,
+        host_name: document.getElementById('vm-hostname').value.trim(),
+        management_ip: document.getElementById('vm-ip').value.trim(),
+        additional_ips: collectVmExtraIps(),
+        cpu: document.getElementById('vm-cpu').value.trim(),
+        memory: document.getElementById('vm-mem').value.trim(),
+        disk_size: document.getElementById('vm-disk').value.trim(),
+        disk_count: diskRows.length,
+        disks: diskRows,
+        storage_lun: document.getElementById('vm-storage-lun').value.trim(),
+        notes: document.getElementById('vm-notes').value.trim(),
+    };
+    const lockControls = Array.from(document.querySelectorAll('.vm-sync-lock'));
+    if (lockControls.length) {
+        result.sync_locked_fields = lockControls.filter(x => x.checked).map(x => x.value);
+    }
+    return result;
+}
+
+async function submitAddVm() {
+    const data = collectVm();
+    if (!data.name) { showToast('请填写服务器名称', 'warning'); return; }
+    try {
+        await API.post('/api/vms', data);
+        showToast('已新增', 'success');
+        document.querySelector('.modal-overlay').remove();
+        ['filterHost', 'filterOs', 'filterStatus', 'filterSearch'].forEach(id => {
+            const el = document.getElementById(id); if (el) el.value = '';
+        });
+        loadVms(); loadSummary();
+    } catch (e) { showToast('新增失败: ' + e.message, 'error'); }
+}
+
+async function editVm(id) {
+    try {
+        const v = await API.get('/api/vms/' + id);
+        const hostOpts = await loadHosts();
+        document.getElementById('modalContainer').innerHTML = vmModalHTML('编辑虚拟机', v, hostOpts);
+        initDiskRows(v);
+    } catch (e) { showToast('加载失败: ' + e.message, 'error'); }
+}
+
+async function submitEditVm(id) {
+    const data = collectVm();
+    try {
+        await API.put('/api/vms/' + id, data);
+        showToast('已保存', 'success');
+        document.querySelector('.modal-overlay').remove();
+        loadVms(); loadSummary();
+    } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+}
+
+async function deleteVm(id) {
+    if (!confirm('确定删除该虚拟机？')) return;
+    try {
+        await API.delete('/api/vms/' + id);
+        showToast('已删除', 'success');
+        loadVms(); loadSummary();
+    } catch (e) { showToast('删除失败: ' + e.message, 'error'); }
+}
+
+loadHosts();
+loadVms();
+loadSummary();
+
+// ---------- 导入 / 导出 / 模板 ----------
+function downloadVmTemplate() {
+    window.location.href = '/api/vms/template/csv';
+}
+
+function exportVms() {
+    window.location.href = '/api/vms/export/csv';
+}
+
+function showImportVmModal() {
+    const fields = [
+        ['name', '服务器名称（必填，唯一）'],
+        ['function', '功能 / 用途'],
+        ['os_type', '操作系统类型（Windows / Linux / 其他）'],
+        ['os_version', '系统版本（如 CentOS 7.9）'],
+        ['status', '运行状态（运行中 / 已关机 / 挂起 / 模板 / 其他）'],
+        ['host_name', '宿主机名称（与「服务器存储」同名则自动关联）'],
+        ['management_ip', '主管理 IP'],
+        ['ip2 ~ ip5', '额外 IP（最多 4 个，可选）'],
+        ['cpu', 'CPU（如 4 vCPU）'],
+        ['memory', '内存（如 8 GB）'],
+        ['disk_size', '磁盘大小（如 200 GB）'],
+        ['disk_count', '磁盘数量（整数，如 2；填了 disks 明细则自动取明细条数）'],
+        ['disks', '磁盘明细（格式：名称:大小;名称:大小，如 系统盘:100 GB;数据盘:500 GB）'],
+        ['storage_lun', '存储 LUN 信息（如 LUN0:100GB,LUN1:200GB）'],
+        ['notes', '备注'],
+    ];
+    const help = fields.map(f => `<li><code>${f[0]}</code> — ${f[1]}</li>`).join('');
+    const html = `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal" style="max-width:620px;"><div class="modal-header"><h3>⬆ 导入虚拟机（CSV）</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+            <div class="modal-body">
+                <p style="color:#888;font-size:13px;margin-top:0;">请先「下载模板」按列填写，首行为表头，<strong>name 必填</strong>；重复名称自动跳过；CSV 需为 UTF-8 编码（Excel 另存为 CSV UTF-8）。</p>
+                <ul style="font-size:13px;color:#555;margin:0 0 12px 18px;padding:0;">${help}</ul>
+                <div class="form-group">
+                    <label>选择 CSV 文件</label>
+                    <input type="file" class="form-control" id="vm-import-file" accept=".csv,text/csv">
+                </div>
+                <div id="vm-import-result" style="font-size:13px;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                <button class="btn btn-primary" onclick="submitImportVm()">导入</button>
+            </div></div></div>`;
+    document.getElementById('modalContainer').innerHTML = html;
+}
+
+async function submitImportVm() {
+    const fileEl = document.getElementById('vm-import-file');
+    const resultEl = document.getElementById('vm-import-result');
+    if (!fileEl || !fileEl.files || !fileEl.files.length) {
+        showToast('请先选择 CSV 文件', 'warning');
+        return;
+    }
+    const fd = new FormData();
+    fd.append('file', fileEl.files[0]);
+    resultEl.innerHTML = '导入中...';
+    try {
+        const r = await fetch('/api/vms/import-csv', { method: 'POST', body: fd });
+        const data = await r.json();
+        if (!r.ok) {
+            resultEl.innerHTML = `<span style="color:#c0392b;">导入失败：${escapeHtml(data.detail || '未知错误')}</span>`;
+            return;
+        }
+        let msg = `✅ ${data.message}`;
+        if (data.errors && data.errors.length) {
+            msg += '<br><span style="color:#c0392b;">错误：</span><br>' +
+                data.errors.slice(0, 10).map(e => escapeHtml(e)).join('<br>');
+            if (data.errors.length > 10) msg += '<br>…';
+        }
+        resultEl.innerHTML = msg;
+        showToast(`导入 ${data.imported} 条`, 'success');
+        loadVms(); loadSummary(); loadHosts();
+    } catch (e) {
+        resultEl.innerHTML = `<span style="color:#c0392b;">导入失败：${escapeHtml(e.message)}</span>`;
+    }
+}
+</script>
+{% endblock %}

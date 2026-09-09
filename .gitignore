@@ -1,0 +1,56 @@
+# ===== Build artifacts =====
+build/
+build_onefile/
+dist/
+dist_onefile/
+build_onefile_log.txt
+build*.log
+build_log*.txt
+
+# Packaging helper (regenerated each packaging cycle)
+package_portable.py
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# ===== Runtime data (DB is auto-created on first launch; commands.json auto-bootstrapped) =====
+data/
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+.secret_key
+initial_admin_password.txt
+*.log
+*.pem
+*.key
+
+# ===== Smoke-test scratch dir =====
+_smoke/
+_smoke2/
+
+# ===== Installer build scratch (regenerated each cycle) =====
+_installer/
+_installer_cache/
+_installer_build/
+installer/nssm.exe
+
+# ===== Editors / OS =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp

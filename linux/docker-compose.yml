@@ -1,0 +1,25 @@
+# docker-compose.yml — run Cisco Network Manager as a Linux container.
+#
+#   docker compose up -d
+#
+# Data persists in the named volume "cisco-netmgr-data".
+# Access the web UI at http://<host>:9632/
+services:
+  cisco-netmgr:
+    build:
+      context: ..
+      dockerfile: linux/Dockerfile
+    image: cisco-netmgr:1.9.41
+    container_name: cisco-netmgr
+    restart: unless-stopped
+    ports:
+      - "9632:9632"
+    environment:
+      NETMGR_HOST: "0.0.0.0"
+      NETMGR_PORT: "9632"
+      CISCO_NM_DATA_DIR: "/data"
+    volumes:
+      - cisco-netmgr-data:/data
+
+volumes:
+  cisco-netmgr-data:
