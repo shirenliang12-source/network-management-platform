@@ -98,7 +98,7 @@ def _ip_covered_by_inventory(db: Session, ip_str: str) -> bool:
     return False
 
 
-def sync_device_auto_links(db: Session, device: Device):
+def sync_device_auto_links(db: Session, device: Device, *, commit=True):
     """Sync auto-created IPAM / IP inventory records with a device's extra IPs.
 
     Removes this device's previously auto-created records that are no longer among
@@ -159,4 +159,5 @@ def sync_device_auto_links(db: Session, device: Device):
                 firewall="",
                 zone_interface_name="",
             ))
-    db.commit()
+    if commit:
+        db.commit()

@@ -3,11 +3,18 @@
 <div class="page-header">
     <div>
         <h1>🔗 平台集成</h1>
+        <p>同步自动排除模板及已关机虚拟机；已有本地记录保留，不会因排除被标记失联。Zabbix 只有提供明确关机状态时才能识别关机，监控不可达不等于关机。</p>
+        <a class="btn btn-outline" href="/schedule">配置定期同步任务（Zabbix / vCenter 资产同步）</a>
         <p style="color:#6c757d;margin:6px 0 0;">从 Zabbix 或 VMware vCenter 发现虚拟机与存储信息，选择后导入虚拟机系统。</p>
     </div>
 </div>
 
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(390px,1fr));gap:18px;">
+    <div class="card" id="dhcp-integration" style="grid-column:1/-1">
+        <div class="card-header">DHCP 多来源（Windows / PA / Fortinet）<button class="btn btn-primary" onclick="editDhcpSource()">添加地址池连接</button> <button class="btn btn-outline" onclick="loadDhcpIntegrations()">刷新</button></div>
+        <div class="card-body"><p>统一维护 DHCP 服务器、作用域、定期同步和预警。同步成功后，在「IP 地址规划 → 网段 → DHCP 地址池」中关联。兼容已有 IP 清单配置，不重复复制。</p><p>只读 IPv4 统计。Windows 需要安装电脑的 RSAT DHCP 模块及读取权限；PA/Fortinet 需要 HTTPS 只读 API 密钥，不需要 RSAT。不修改服务器或防火墙 DHCP 配置。</p>
+        <div class="table-container"><table class="data-table"><thead><tr><th>名称 / 来源</th><th>服务器 / 作用域</th><th>同步策略</th><th>地址池统计</th><th>操作</th></tr></thead><tbody id="dhcp-integration-list"><tr><td colspan="5">加载中…</td></tr></tbody></table></div></div>
+    </div>
     <div class="card">
         <div class="card-header">📈 Zabbix</div>
         <div class="card-body">
@@ -67,7 +74,7 @@
     <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
         <span id="inventory-title">发现结果</span>
         <div>
-            <label style="font-size:13px;margin-right:10px;"><input id="update-existing" type="checkbox" checked> 更新已导入记录</label>
+            <label style="font-size:13px;margin-right:10px;"><input id="update-existing" type="checkbox"> 更新已导入记录（需确认）</label>
             <button class="btn btn-primary" id="import-selected">导入选中项</button>
         </div>
     </div>
@@ -107,4 +114,4 @@
     </table></div></div>
 </div>
 {% endblock %}
-{% block scripts %}<script src="/static/js/integrations.js?v={{ APP_VERSION }}"></script>{% endblock %}
+{% block scripts %}<script src="/static/js/integrations.js?v={{ APP_VERSION }}"></script><script src="/static/js/dhcp_auth.js?v={{APP_VERSION}}"></script><script src="/static/js/dhcp_provider.js?v={{APP_VERSION}}"></script><script src="/static/js/dhcp_integration.js?v={{ APP_VERSION }}"></script>{% endblock %}

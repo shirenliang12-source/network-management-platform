@@ -437,6 +437,7 @@ class IPAMIPAddress(Base):
     dns_name = Column(String(255), default="")                   # DNS 名称
     description = Column(Text, default="")                       # 描述 / 备注
     assigned_device_id = Column(Integer, ForeignKey("devices.id"), nullable=True, index=True)
+    assigned_vm_id = Column(Integer, ForeignKey("vm_instances.id"), nullable=True, index=True)
     # 手工录入的设备信息（无需预先在「设备」中登记）：设备名称 / 型号 / IP
     device_name = Column(String(200), default="")                # 设备名称（手工录入）
     device_model = Column(String(100), default="")               # 设备型号（手工录入）

@@ -23,13 +23,30 @@ DEVICE_TYPE_DISPLAY = {
 }
 
 
-def _get_or_create_group_by_device_type(device_type: str, db: Session) -> DeviceGroup:
+def classify_neighbor(platform: str, capability: str = "", name: str = "") -> str:
+    text = f"{platform} {capability} {name}".upper()
+    if re.search(r"IP[ -]?PHONE|TELEPHONE|\bPHONE\b|\bCP-\d|\bSEP[0-9A-F]{12}\b", text):
+        return "IPT 电话"
+    if re.search(r"\bVG[ -]?\d|VOICE GATEWAY|语音网关", text):
+        return "VG 语音网关"
+    if re.search(r"AIR-(?:AP|CAP|LAP)|\bC9[01]\d\dAX|ACCESS POINT|\bWLAN ACCESS POINT\b", text):
+        return "AP 无线接入点"
+    if re.search(r"AIR-CT|\bWLC\b|CONTROLLER", text):
+        return "无线控制器"
+    if re.search(r"SWITCH|CATALYST|NEXUS|WS-C|\bC9[234569]\d\d|\bN[3579]K", text):
+        return "交换机"
+    if re.search(r"ROUTER|\bISR|\bASR", text):
+        return "路由器"
+    return "待识别设备"
+
+
+def _get_or_create_group_by_device_type(device_type: str, db: Session, category: str = "") -> DeviceGroup:
     """Find or create a device group whose name matches the device type.
 
     If a group with the display name already exists, reuse it.
     Otherwise create a new one with a descriptive name.
     """
-    display_name = DEVICE_TYPE_DISPLAY.get(device_type, f"设备类型: {device_type}")
+    display_name = category or DEVICE_TYPE_DISPLAY.get(device_type, f"设备类型: {device_type}")
     group = db.query(DeviceGroup).filter(DeviceGroup.name == display_name).first()
     if not group:
         group = DeviceGroup(
@@ -55,6 +72,8 @@ def infer_device_type_from_platform(platform_str: str) -> str:
     p = (platform_str or "").upper()
     if not p:
         return ""
+    if classify_neighbor(p) == "AP 无线接入点":
+        return "cisco_ap"
     # WLC / Controller
     if "AIR-CT" in p or "AIR-AP" in p or "CT5508" in p or "CT5520" in p or "WLC" in p or "CONTROLLER" in p:
         if "AP" in p and "CT" not in p:
@@ -181,7 +200,7 @@ def discover_device_neighbors(device: Device, db: Session) -> dict:
     return result
 
 
-def auto_add_discovered_neighbors(device_ids: list, db: Session) -> dict:
+def auto_add_discovered_neighbors(device_ids: list, db: Session, neighbor_ids: list | None = None) -> dict:
     """Auto-add discovered neighbor devices to the device list.
 
     For each neighbor with a neighbor_ip that is not already a managed device:
@@ -237,6 +256,8 @@ def auto_add_discovered_neighbors(device_ids: list, db: Session) -> dict:
     seen_ips = set()
     unique_neighbors = []
     for n in neighbors:
+        if neighbor_ids is not None and n.id not in neighbor_ids:
+            continue
         ip = (n.neighbor_ip or "").strip()
         if ip and ip not in seen_ips:
             seen_ips.add(ip)
@@ -248,7 +269,16 @@ def auto_add_discovered_neighbors(device_ids: list, db: Session) -> dict:
             continue
 
         # Skip if a device with this IP already exists
-        existing = db.query(Device).filter(Device.ip_address == ip).first()
+        from app.models import DeviceIP
+        from ipaddress import ip_address
+        try:
+            address = ip_address(ip)
+            if address.is_unspecified or address.is_multicast or address.is_loopback:
+                raise ValueError("不可用的管理地址")
+        except ValueError:
+            result["errors"].append(f"跳过无效管理地址: {ip}")
+            continue
+        existing = db.query(Device).filter((Device.ip_address == ip) | Device.extra_ips.any(DeviceIP.ip_address == ip)).first()
         if existing:
             # Link the neighbor record to the existing device if not linked
             if not neighbor.neighbor_device_id:
@@ -295,9 +325,10 @@ def auto_add_discovered_neighbors(device_ids: list, db: Session) -> dict:
             enable_password_enc = source_device.enable_password_enc
 
         # ---- Auto-grouping by device type ----
-        if device_type not in group_cache:
-            group_cache[device_type] = _get_or_create_group_by_device_type(device_type, db)
-        group = group_cache[device_type]
+        category = classify_neighbor(neighbor.neighbor_platform, neighbor.neighbor_capability, neighbor.neighbor_name)
+        if category not in group_cache:
+            group_cache[category] = _get_or_create_group_by_device_type(device_type, db, category)
+        group = group_cache[category]
         group_name = group.name
 
         try:
@@ -307,10 +338,12 @@ def auto_add_discovered_neighbors(device_ids: list, db: Session) -> dict:
                 device_type=device_type,
                 group_id=group.id,
                 company=source_device.company or "",
+                model=(neighbor.neighbor_platform or "")[:200],
+                function=category,
                 username=username,
                 port=port,
                 source_ip=source_ip,
-                is_active=True,
+                is_active=category not in {"IPT 电话", "待识别设备"},
                 status="unknown",
             )
             # Copy encrypted credentials directly (avoid decrypt/re-encrypt round-trip)

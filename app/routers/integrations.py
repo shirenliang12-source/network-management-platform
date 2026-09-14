@@ -88,8 +88,10 @@ def _configured(db: Session, source: str) -> dict[str, Any]:
 def _discover(source: str, config: dict[str, Any], limit: int) -> dict[str, Any]:
     try:
         if source == "zabbix":
-            return integration_service.discover_zabbix(config, limit=limit)
-        return integration_service.discover_vcenter(config, limit=limit)
+            result = integration_service.discover_zabbix(config, limit=limit)
+        else:
+            result = integration_service.discover_vcenter(config, limit=limit)
+        return integration_sync_service.filter_sync_inventory(result)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"{source} 清单获取失败: {exc}") from exc
 

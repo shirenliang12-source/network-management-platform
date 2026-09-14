@@ -3,8 +3,9 @@ import csv
 import io
 import ipaddress
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, Request
 from app.api_models import StrictRequest
+from pydantic import Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -26,6 +27,48 @@ from app.schemas import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ipam", tags=["ipam"])
 
+
+@router.get('/relations-check')
+def check_ipam_relations(db: Session = Depends(get_db)):
+    from app.services.ipam_import import audit_relations
+    return audit_relations(db)
+
+
+class VMAllocationRequest(StrictRequest):
+    vm_id: int
+    prefix_id: int
+    address: str
+    release: bool = False
+
+
+@router.post('/vm-allocation')
+def allocate_vm_ip(payload: VMAllocationRequest, request: Request, db: Session = Depends(get_db)):
+    from app.services.asset_relations import request_modules
+    from app.services.ip_allocation import allocate
+    if not {'ipam', 'vms'} <= request_modules(request):
+        raise HTTPException(403, '需要虚拟机和 IP 规划权限')
+    from sqlalchemy.exc import OperationalError
+    try:
+        result = allocate(db, **payload.model_dump())
+    except OperationalError:
+        db.rollback()
+        raise HTTPException(409, '数据库正被其他操作更新，请刷新后重试')
+    request.state.audit_action = 'ipam.release_vm' if payload.release else 'ipam.allocate_vm'
+    request.state.audit_detail = payload.model_dump()
+    return result
+
+
+@router.get('/prefixes/{prefix_id}/relations')
+def prefix_relations(prefix_id: int, request: Request, db: Session = Depends(get_db)):
+    from app.services.asset_relations import relations, request_modules
+    return relations(db, 'prefix', prefix_id, request_modules(request))
+
+
+@router.get('/ips/{ip_id}/relations')
+def ip_relations(ip_id: int, request: Request, db: Session = Depends(get_db)):
+    from app.services.asset_relations import relations, request_modules
+    return relations(db, 'ip', ip_id, request_modules(request))
+
 # 统一四态：规划 / 预分配 / 使用中 / 已停用
 IPAM_STATUSES = ["规划", "预分配", "使用中", "已停用"]
 # IP 分配类型：静态（手配、需登记使用设备）/ DHCP（自动分配、不做后续统计）
@@ -45,7 +88,7 @@ def _prefix_counts(cidr: str):
     except (ValueError, TypeError):
         return 0, 0
     total = net.num_addresses
-    if total <= 2:
+    if total <= 2 or net.version == 6:
         usable = total
     else:
         usable = total - 2
@@ -112,6 +155,13 @@ def create_aggregate(payload: IPAMAggregateCreate, db: Session = Depends(get_db)
 
 @router.put("/aggregates/{agg_id}", response_model=IPAMAggregateResponse)
 def update_aggregate(agg_id: int, payload: IPAMAggregateUpdate, db: Session = Depends(get_db)):
+    if payload.prefix:
+        from app.services.ipam_import import contains, network
+        try:
+            for child in db.query(IPAMPrefix).filter_by(aggregate_id=agg_id).all():
+                contains(network(payload.prefix),network(child.prefix))
+        except ValueError:
+            raise HTTPException(409, '修改后的聚合必须包含现有关联网段，请先调整网段关系')
     agg = db.query(IPAMAggregate).get(agg_id)
     if not agg:
         raise HTTPException(status_code=404, detail="聚合不存在")
@@ -135,6 +185,11 @@ def delete_aggregate(agg_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="聚合不存在")
     # 级联删除其下所有网段与 IP（避免孤儿数据）
     prefixes = db.query(IPAMPrefix).filter(IPAMPrefix.aggregate_id == agg_id).all()
+    from app.models import SystemSetting
+    if any(db.get(SystemSetting, f'ipam_dhcp:{p.id}') for p in prefixes):
+        raise HTTPException(409, '聚合中存在 DHCP 关联，请先解除关联')
+    if db.query(IPAMIPAddress).filter(IPAMIPAddress.prefix_id.in_([p.id for p in prefixes]), IPAMIPAddress.assigned_vm_id.isnot(None)).first():
+        raise HTTPException(409, '聚合中存在虚拟机占用，请先释放')
     for p in prefixes:
         db.query(IPAMIPAddress).filter(IPAMIPAddress.prefix_id == p.id).delete()
     db.query(IPAMPrefix).filter(IPAMPrefix.aggregate_id == agg_id).delete()
@@ -224,10 +279,12 @@ def create_prefix(payload: IPAMPrefixCreate, db: Session = Depends(get_db)):
         if not parent:
             raise HTTPException(status_code=400, detail="父网段不存在")
         agg_id = agg_id or parent.aggregate_id
+    from app.services.ipam_import import validate_prefix
+    normalized, agg_id = validate_prefix(db,payload.prefix,agg_id,payload.parent_id)
     prefix = IPAMPrefix(
         aggregate_id=agg_id,
         parent_id=payload.parent_id if payload.parent_id else None,
-        prefix=payload.prefix or "",
+        prefix=normalized,
         status=_valid_status(payload.status),
         role=payload.role or "",
         vlan=payload.vlan or "",
@@ -245,10 +302,17 @@ def create_prefix(payload: IPAMPrefixCreate, db: Session = Depends(get_db)):
 
 @router.put("/prefixes/{prefix_id}", response_model=IPAMPrefixResponse)
 def update_prefix(prefix_id: int, payload: IPAMPrefixUpdate, db: Session = Depends(get_db)):
+    from app.models import SystemSetting
+    if payload.prefix is not None and db.get(SystemSetting, f'ipam_dhcp:{prefix_id}'):
+        existing = db.get(IPAMPrefix, prefix_id)
+        if existing and payload.prefix != existing.prefix:
+            raise HTTPException(409, '请先解除 DHCP 关联，再修改网段 CIDR')
     p = db.query(IPAMPrefix).get(prefix_id)
     if not p:
         raise HTTPException(status_code=404, detail="网段不存在")
     data = payload.model_dump(exclude_unset=True)
+    if 'prefix' in data and data['prefix'] != p.prefix and db.query(IPAMIPAddress).filter_by(prefix_id=prefix_id).first():
+        raise HTTPException(409, '网段已登记 IP，请先处理地址分配后再修改 CIDR')
     if "prefix" in data and data["prefix"]:
         try:
             ipaddress.ip_network(data["prefix"], strict=False)
@@ -261,8 +325,13 @@ def update_prefix(prefix_id: int, payload: IPAMPrefixUpdate, db: Session = Depen
         if data["parent_id"] == prefix_id:
             raise HTTPException(status_code=400, detail="不能把网段设为自己的父级")
         data["aggregate_id"] = data.get("aggregate_id") or parent.aggregate_id
+    if any(key in data for key in ('prefix','parent_id','aggregate_id')):
+        from app.services.ipam_import import validate_prefix
+        normalized, agg_id = validate_prefix(db,data.get('prefix',p.prefix),data.get('aggregate_id',p.aggregate_id),data.get('parent_id',p.parent_id),p.id)
+        data['prefix']=normalized
+        data['aggregate_id']=agg_id
     for key, value in data.items():
-        if value is None:
+        if value is None and key not in {'aggregate_id','parent_id'}:
             continue
         setattr(p, key, value)
     db.commit()
@@ -272,6 +341,14 @@ def update_prefix(prefix_id: int, payload: IPAMPrefixUpdate, db: Session = Depen
 
 @router.delete("/prefixes/{prefix_id}")
 def delete_prefix(prefix_id: int, db: Session = Depends(get_db)):
+    from app.models import SystemSetting
+    link = db.get(SystemSetting, f'ipam_dhcp:{prefix_id}')
+    if link:
+        raise HTTPException(409, '请先解除 DHCP 关联，再删除网段')
+    if db.query(IPAMPrefix).filter_by(parent_id=prefix_id).first():
+        raise HTTPException(409, '请先处理子网段，再删除父网段')
+    if db.query(IPAMIPAddress).filter(IPAMIPAddress.prefix_id == prefix_id, IPAMIPAddress.assigned_vm_id.isnot(None)).first():
+        raise HTTPException(409, '网段中存在虚拟机占用，请先释放')
     p = db.query(IPAMPrefix).get(prefix_id)
     if not p:
         raise HTTPException(status_code=404, detail="网段不存在")
@@ -292,12 +369,19 @@ def _prefix_response(db: Session, p: IPAMPrefix) -> IPAMPrefixResponse:
     # 静态 / DHCP 分配统计：静态 IP 按是否绑定设备区分已用/未用；DHCP 单独计数、不做设备统计
     all_ips = db.query(IPAMIPAddress).filter(IPAMIPAddress.prefix_id == p.id).all()
     static_ips = [x for x in all_ips if (x.allocation_type or "静态") == "静态"]
-    static_used = sum(1 for x in static_ips if x.assigned_device_id)
+    static_used = sum(1 for x in static_ips if x.status == '使用中' or x.assigned_device_id or x.assigned_vm_id)
     static_unused = len(static_ips) - static_used
     dhcp_count = sum(1 for x in all_ips if (x.allocation_type or "静态") == "DHCP")
     device_list = []
     for x in static_ips:
-        if x.assigned_device_id:
+        if x.assigned_vm_id:
+            from app.models import VMInstance
+            vm = db.get(VMInstance, x.assigned_vm_id)
+            device_list.append({'device_id': None, 'vm_id': x.assigned_vm_id,
+                                'device_name': f'虚拟机：{vm.name if vm else x.assigned_vm_id}',
+                                'device_model': 'VM', 'device_ip': x.address, 'device_ips': [],
+                                'address': x.address, 'description': x.description or ''})
+        elif x.assigned_device_id:
             dev = db.query(Device).get(x.assigned_device_id)
             device_list.append({
                 "device_id": x.assigned_device_id,
@@ -318,8 +402,10 @@ def _prefix_response(db: Session, p: IPAMPrefix) -> IPAMPrefixResponse:
                 "address": x.address or "",
                 "description": x.description or "",
             })
-    utilization = round(allocated / usable * 100, 2) if usable else 0.0
+    utilization = round(in_use / usable * 100, 2) if usable else 0.0
+    from app.services.dhcp_integration import prefix_summary
     return IPAMPrefixResponse(
+        dhcp=prefix_summary(db, p.id),
         id=p.id,
         aggregate_id=p.aggregate_id,
         parent_id=p.parent_id,
@@ -363,11 +449,13 @@ def ipam_tree(db: Session = Depends(get_db)):
         if p.aggregate_id:
             by_agg.setdefault(p.aggregate_id, []).append(p.id)
 
+    visited = set()
     def build_prefix_node(p):
         node = _prefix_response(db, p)
         node_dict = node.model_dump()
+        visited.add(p.id)
         children = by_parent.get(p.id, [])
-        node_dict["children"] = [build_prefix_node(c) for c in children]
+        node_dict["children"] = [build_prefix_node(c) for c in children if c.id not in visited]
         return node_dict
 
     result = []
@@ -376,8 +464,12 @@ def ipam_tree(db: Session = Depends(get_db)):
         agg_dict = agg_resp.model_dump()
         # 顶层网段 = parent_id 为空 且 属于该聚合
         top = [p for p in all_prefixes if p.aggregate_id == agg.id and (p.parent_id is None)]
-        agg_dict["children"] = [build_prefix_node(p) for p in top]
+        agg_dict["children"] = [build_prefix_node(p) for p in top if p.id not in visited]
         result.append(agg_dict)
+    unplaced = [p for p in all_prefixes if p.id not in visited]
+    if unplaced:
+        children = [build_prefix_node(p) for p in unplaced if p.id not in visited]
+        result.append({'id':None,'name':'未关联聚合 / 待检查关系','prefix':'','prefix_count':len(unplaced),'ip_count':sum(c['allocated_ips'] for c in children),'utilization':0,'children':children})
     return result
 
 
@@ -465,16 +557,32 @@ def update_ip(ip_id: int, payload: IPAMIPAddressUpdate, db: Session = Depends(ge
     ip = db.query(IPAMIPAddress).get(ip_id)
     if not ip:
         raise HTTPException(status_code=404, detail="IP 不存在")
+    if ip.assigned_vm_id:
+        raise HTTPException(409, '请先释放虚拟机占用，再修改地址记录')
     data = payload.model_dump(exclude_unset=True)
-    if "address" in data and data["address"]:
-        prefix = db.query(IPAMPrefix).get(ip.prefix_id)
-        try:
-            ip_obj = ipaddress.ip_address(data["address"])
-            net = ipaddress.ip_network(prefix.prefix, strict=False)
-            if ip_obj not in net:
-                raise HTTPException(status_code=400, detail=f"IP 不在网段 {prefix.prefix} 范围内")
-        except (ValueError, TypeError):
-            raise HTTPException(status_code=400, detail="IP 地址格式不正确")
+    target_id = data.get('prefix_id', ip.prefix_id)
+    target = db.get(IPAMPrefix, target_id) if target_id else None
+    if not target:
+        raise HTTPException(400, '目标网段不存在，不能清空所属网段')
+    try:
+        address = ipaddress.ip_address(data.get('address', ip.address))
+        net = ipaddress.ip_network(target.prefix, strict=False)
+        if address.version != net.version or address not in net:
+            raise ValueError('IP 不在目标网段中')
+    except (ValueError, TypeError):
+        raise HTTPException(400, 'IP 格式无效或不属于目标网段')
+    for other in db.query(IPAMIPAddress).filter_by(prefix_id=target_id).all():
+        if other.id != ip.id:
+            try:
+                duplicate = ipaddress.ip_address(other.address) == address
+            except ValueError:
+                duplicate = False
+            if duplicate:
+                raise HTTPException(409, '目标网段已存在此 IP，不覆盖现有占用')
+    if data.get('assigned_device_id') and not db.get(Device, data['assigned_device_id']):
+        raise HTTPException(400, '关联设备不存在')
+    if 'address' in data:
+        data['address'] = str(address)
     # 分配类型规范化；DHCP 时清空关联设备
     if "allocation_type" in data:
         data["allocation_type"] = _valid_allocation(data["allocation_type"])
@@ -496,6 +604,8 @@ def delete_ip(ip_id: int, db: Session = Depends(get_db)):
     ip = db.query(IPAMIPAddress).get(ip_id)
     if not ip:
         raise HTTPException(status_code=404, detail="IP 不存在")
+    if ip.assigned_vm_id:
+        raise HTTPException(409, '请先释放虚拟机占用')
     db.delete(ip)
     db.commit()
     return {"message": "已删除"}
@@ -546,6 +656,8 @@ def generate_ips(prefix_id: int, db: Session = Depends(get_db)):
 
 
 def _ip_response(db: Session, ip: IPAMIPAddress, ip_map: dict = None) -> IPAMIPAddressResponse:
+    from app.models import VMInstance
+    vm = db.get(VMInstance, ip.assigned_vm_id) if ip.assigned_vm_id else None
     # 设备名称优先取「关联设备」名称，未关联时回退到手工录入的名称
     assigned_name = _device_name(db, ip.assigned_device_id)
     display_name = assigned_name or (ip.device_name or "")
@@ -554,7 +666,7 @@ def _ip_response(db: Session, ip: IPAMIPAddress, ip_map: dict = None) -> IPAMIPA
     reverse_linked = False
     dev = db.query(Device).get(ip.assigned_device_id) if ip.assigned_device_id else None
     # 双向反查：未显式关联设备时，用 IP 地址匹配设备的「主IP + 额外IP」
-    if dev is None:
+    if dev is None and not ip.assigned_vm_id:
         if ip_map is None:
             ip_map = build_ip_to_device_map(db)
         dev = ip_map.get((ip.address or "").strip())
@@ -567,6 +679,8 @@ def _ip_response(db: Session, ip: IPAMIPAddress, ip_map: dict = None) -> IPAMIPA
             assigned_name = dev.name
             display_name = dev.name
     return IPAMIPAddressResponse(
+        assigned_vm_id=ip.assigned_vm_id,
+        assigned_vm_name=vm.name if vm else '',
         id=ip.id,
         prefix_id=ip.prefix_id,
         address=ip.address or "",
@@ -608,7 +722,7 @@ def list_devices_for_select(db: Session = Depends(get_db)):
 # Import (CSV 批量导入：聚合 / 网段 / IP 地址)
 # ---------------------------------------------------------------------------
 class _ImportPayload(StrictRequest):
-    csv: str  # raw CSV text (supports BOM / quoted fields)
+    csv: str = Field(max_length=10_000_000)
 
 
 def _clean_csv(raw: str) -> str:
@@ -686,50 +800,13 @@ AGG_IMPORT_MAP = {
 
 @router.post("/aggregates/import")
 def import_aggregates(payload: _ImportPayload, db: Session = Depends(get_db)):
-    """批量导入聚合（大子网）。表头自动识别，前缀重复自动跳过。"""
-    raw = _clean_csv(payload.csv)
-    if not raw.strip():
-        raise HTTPException(status_code=400, detail="CSV 内容为空")
-    rows = [r for r in csv.reader(io.StringIO(raw))]
-    if not rows:
-        raise HTTPException(status_code=400, detail="CSV 没有可读的行")
-    col_index = _map_headers(rows[0], AGG_IMPORT_MAP)
-    if not col_index:
-        raise HTTPException(status_code=400, detail="未识别到已知列（需包含 名称 / 前缀(CIDR) 之一）")
-    existing = {a.prefix for a in db.query(IPAMAggregate.prefix).all()}
-    created = 0
-    skipped = 0
-    errors = []
-    for lineno, row in enumerate(rows[1:], start=2):
-        if not row or all((c or "").strip() == "" for c in row):
-            skipped += 1
-            continue
-        data = {f: (row[i].strip() if i < len(row) else "") for f, i in col_index.items()}
-        name = data.get("name")
-        prefix = data.get("prefix")
-        if not name or not prefix:
-            skipped += 1
-            continue
-        if prefix in existing:
-            skipped += 1
-            continue
-        try:
-            ipaddress.ip_network(prefix, strict=False)
-        except (ValueError, TypeError):
-            errors.append(f"第 {lineno} 行：前缀「{prefix}」格式不正确，已跳过")
-            skipped += 1
-            continue
-        db.add(IPAMAggregate(
-            name=name, prefix=prefix,
-            description=data.get("description", ""), date_added=data.get("date_added", ""),
-        ))
-        existing.add(prefix)
-        created += 1
-    db.commit()
-    return {"created": created, "skipped": skipped, "errors": errors[:50]}
+    from app.services.ipam_import import run_import
+    return run_import(db, 'aggregates', payload.csv)
 
 
 PREFIX_IMPORT_MAP = {
+    "前缀": "prefix", "子网": "prefix", "子网网段": "prefix", "网段前缀": "prefix",
+    "父网段": "parent", "parent": "parent", "parent_prefix": "parent",
     "网段": "prefix", "prefix": "prefix", "cidr": "prefix", "subnet": "prefix",
     "聚合": "aggregate", "aggregate": "aggregate",
     "状态": "status", "status": "status",
@@ -746,61 +823,8 @@ PREFIX_IMPORT_MAP = {
 
 @router.post("/prefixes/import")
 def import_prefixes(payload: _ImportPayload, db: Session = Depends(get_db)):
-    """批量导入网段。聚合列可写名称或 CIDR，找不到时若是 CIDR 自动建聚合。"""
-    raw = _clean_csv(payload.csv)
-    if not raw.strip():
-        raise HTTPException(status_code=400, detail="CSV 内容为空")
-    rows = [r for r in csv.reader(io.StringIO(raw))]
-    if not rows:
-        raise HTTPException(status_code=400, detail="CSV 没有可读的行")
-    col_index = _map_headers(rows[0], PREFIX_IMPORT_MAP)
-    if not col_index:
-        raise HTTPException(status_code=400, detail="未识别到已知列（需包含 网段(CIDR) 之一）")
-    aggs = db.query(IPAMAggregate).all()
-    agg_by_name = {a.name: a.id for a in aggs}
-    agg_by_prefix = {a.prefix: a.id for a in aggs}
-    created_aggs = []
-    existing_pfx = {p.prefix for p in db.query(IPAMPrefix.prefix).all()}
-    created = 0
-    skipped = 0
-    errors = []
-    for lineno, row in enumerate(rows[1:], start=2):
-        if not row or all((c or "").strip() == "" for c in row):
-            skipped += 1
-            continue
-        data = {f: (row[i].strip() if i < len(row) else "") for f, i in col_index.items()}
-        prefix = data.get("prefix")
-        if not prefix:
-            skipped += 1
-            continue
-        if prefix in existing_pfx:
-            skipped += 1
-            continue
-        try:
-            ipaddress.ip_network(prefix, strict=False)
-        except (ValueError, TypeError):
-            errors.append(f"第 {lineno} 行：网段「{prefix}」格式不正确，已跳过")
-            skipped += 1
-            continue
-        agg_id = _resolve_aggregate(db, data.get("aggregate"), created_aggs, agg_by_name, agg_by_prefix, errors, lineno)
-        pool = data.get("is_pool")
-        is_pool = str(pool).lower() in ("1", "true", "yes", "y", "是", "分配池")
-        db.add(IPAMPrefix(
-            aggregate_id=agg_id,
-            prefix=prefix,
-            status=_valid_status(data.get("status", "规划")),
-            role=data.get("role", ""),
-            vlan=data.get("vlan", ""),
-            company=data.get("company", ""),
-            firewall=data.get("firewall", ""),
-            zone_interface_name=data.get("zone_interface_name", ""),
-            description=data.get("description", ""),
-            is_pool=is_pool,
-        ))
-        existing_pfx.add(prefix)
-        created += 1
-    db.commit()
-    return {"created": created, "skipped": skipped, "created_aggregates": created_aggs, "errors": errors[:50]}
+    from app.services.ipam_import import run_import
+    return run_import(db, 'prefixes', payload.csv)
 
 
 IP_IMPORT_MAP = {
@@ -820,93 +844,8 @@ IP_IMPORT_MAP = {
 
 @router.post("/ips/import")
 def import_ips(payload: _ImportPayload, db: Session = Depends(get_db)):
-    """批量导入 IP 地址。网段不存在则自动创建；关联设备按名称匹配；分配类型默认静态。"""
-    raw = _clean_csv(payload.csv)
-    if not raw.strip():
-        raise HTTPException(status_code=400, detail="CSV 内容为空")
-    rows = [r for r in csv.reader(io.StringIO(raw))]
-    if not rows:
-        raise HTTPException(status_code=400, detail="CSV 没有可读的行")
-    col_index = _map_headers(rows[0], IP_IMPORT_MAP)
-    if not col_index:
-        raise HTTPException(status_code=400, detail="未识别到已知列（需包含 网段(CIDR) / IP地址 之一）")
-    aggs = db.query(IPAMAggregate).all()
-    agg_by_name = {a.name: a.id for a in aggs}
-    agg_by_prefix = {a.prefix: a.id for a in aggs}
-    created_aggs = []
-    pfx_by_cidr = {p.prefix: p.id for p in db.query(IPAMPrefix).all()}
-    devs = db.query(Device).all()
-    dev_by_name = {d.name: d.id for d in devs}
-    seen = set(
-        (pid, addr)
-        for pid, addr in db.query(IPAMIPAddress.prefix_id, IPAMIPAddress.address).all()
-    )
-    created = 0
-    skipped = 0
-    errors = []
-    for lineno, row in enumerate(rows[1:], start=2):
-        if not row or all((c or "").strip() == "" for c in row):
-            skipped += 1
-            continue
-        data = {f: (row[i].strip() if i < len(row) else "") for f, i in col_index.items()}
-        address = data.get("address")
-        prefix_str = data.get("prefix")
-        if not address or not prefix_str:
-            skipped += 1
-            continue
-        try:
-            ip_obj = ipaddress.ip_address(address)
-        except (ValueError, TypeError):
-            errors.append(f"第 {lineno} 行：IP「{address}」格式不正确，已跳过")
-            skipped += 1
-            continue
-        try:
-            net = ipaddress.ip_network(prefix_str, strict=False)
-        except (ValueError, TypeError):
-            errors.append(f"第 {lineno} 行：网段「{prefix_str}」格式不正确，已跳过")
-            skipped += 1
-            continue
-        if ip_obj not in net:
-            errors.append(f"第 {lineno} 行：IP {address} 不在网段 {prefix_str} 范围内，已跳过")
-            skipped += 1
-            continue
-        pid = pfx_by_cidr.get(prefix_str)
-        if pid is None:
-            agg_id = _resolve_aggregate(db, data.get("aggregate"), created_aggs, agg_by_name, agg_by_prefix, errors, lineno)
-            p = IPAMPrefix(
-                aggregate_id=agg_id, prefix=prefix_str, status="规划",
-                role="", vlan="", company="", firewall="", zone_interface_name="",
-                description="由导入自动创建", is_pool=False,
-            )
-            db.add(p)
-            db.flush()
-            pid = p.id
-            pfx_by_cidr[prefix_str] = pid
-        if (pid, address) in seen:
-            skipped += 1
-            continue
-        allocation = _valid_allocation(data.get("allocation_type", "静态"))
-        device_id = None
-        if allocation != "DHCP" and data.get("device"):
-            device_id = dev_by_name.get(data.get("device"))
-            if device_id is None:
-                errors.append(f"第 {lineno} 行：关联设备「{data.get('device')}」在设备库中未找到，该 IP 仍会创建但不关联设备")
-        db.add(IPAMIPAddress(
-            prefix_id=pid,
-            address=address,
-            status=_valid_status(data.get("status", "规划")),
-            allocation_type=allocation,
-            dns_name=data.get("dns_name", ""),
-            description=data.get("description", ""),
-            assigned_device_id=device_id,
-            device_name=data.get("device_name", "") or "",
-            device_model=data.get("device_model", "") or "",
-            device_ip=data.get("device_ip", "") or "",
-        ))
-        seen.add((pid, address))
-        created += 1
-    db.commit()
-    return {"created": created, "skipped": skipped, "created_aggregates": created_aggs, "errors": errors[:50]}
+    from app.services.ipam_import import run_import
+    return run_import(db, 'ips', payload.csv)
 
 
 # ---------------------------------------------------------------------------
@@ -940,13 +879,14 @@ def export_prefixes(db: Session = Depends(get_db)):
     """导出网段为 CSV，聚合列回写为其 CIDR，便于再次导入。"""
     prefs = db.query(IPAMPrefix).order_by(IPAMPrefix.prefix.asc()).all()
     agg_by_id = {a.id: a for a in db.query(IPAMAggregate).all()}
-    header = ["网段(CIDR)", "聚合(CIDR或名称)", "状态", "用途", "VLAN", "公司", "Firewall", "Zone/Interface Name", "描述"]
+    header = ["网段(CIDR)", "聚合(CIDR或名称)", "状态", "用途", "VLAN", "公司", "Firewall", "Zone/Interface Name", "描述", "父网段(CIDR)", "分配池"]
     rows = []
     for p in prefs:
         agg = agg_by_id.get(p.aggregate_id)
         rows.append([
             p.prefix, agg.prefix if agg else "", p.status, p.role,
             p.vlan, p.company, p.firewall, p.zone_interface_name, p.description,
+            next((q.prefix for q in prefs if q.id == p.parent_id), ''), '是' if p.is_pool else '否',
         ])
     return _csv_response(header, rows, "ipam_prefixes.csv")
 
@@ -957,16 +897,17 @@ def export_ips(db: Session = Depends(get_db)):
     ips = db.query(IPAMIPAddress).order_by(IPAMIPAddress.address.asc()).all()
     pfx_by_id = {p.id: p for p in db.query(IPAMPrefix).all()}
     dev_by_id = {d.id: d for d in db.query(Device).all()}
-    header = ["网段(CIDR)", "IP地址", "状态", "分配类型", "关联设备", "设备名称", "设备型号", "设备IP", "DNS名称", "描述"]
+    header = ["网段(CIDR)", "IP地址", "状态", "分配类型", "关联设备", "设备名称", "设备型号", "设备IP", "DNS名称", "描述", "聚合(CIDR或名称)"]
     rows = []
     for ip in ips:
         pfx = pfx_by_id.get(ip.prefix_id)
         dev = dev_by_id.get(ip.assigned_device_id) if ip.assigned_device_id else None
         rows.append([
             pfx.prefix if pfx else "", ip.address, ip.status, ip.allocation_type,
-            dev.name if dev else "",
+            dev.ip_address if dev else "",
             ip.device_name or "", ip.device_model or "", ip.device_ip or "",
             ip.dns_name or "", ip.description or "",
+            db.get(IPAMAggregate,pfx.aggregate_id).prefix if pfx and pfx.aggregate_id and db.get(IPAMAggregate,pfx.aggregate_id) else '',
         ])
     return _csv_response(header, rows, "ipam_ips.csv")
 
@@ -1032,8 +973,8 @@ def prefix_utilization(db: Session = Depends(get_db)):
         in_use = db.query(func.count(IPAMIPAddress.id)).filter(
             IPAMIPAddress.prefix_id == p.id, IPAMIPAddress.status == "使用中"
         ).scalar() or 0
-        unused = max(usable - allocated, 0)
-        utilization = round(allocated / usable * 100, 2) if usable else 0.0
+        unused = max(usable - in_use, 0)
+        utilization = round(in_use / usable * 100, 2) if usable else 0.0
         sum_total += total
         sum_usable += usable
         sum_allocated += allocated
@@ -1052,7 +993,7 @@ def prefix_utilization(db: Session = Depends(get_db)):
             "unused_ips": unused,
             "utilization": min(utilization, 100.0),
         })
-    overall_util = round(sum_allocated / sum_usable * 100, 2) if sum_usable else 0.0
+    overall_util = round(sum_in_use / sum_usable * 100, 2) if sum_usable else 0.0
     return {
         "prefixes": rows,
         "overall": {
@@ -1060,7 +1001,7 @@ def prefix_utilization(db: Session = Depends(get_db)):
             "usable_ips": sum_usable,
             "allocated_ips": sum_allocated,
             "in_use_ips": sum_in_use,
-            "unused_ips": max(sum_usable - sum_allocated, 0),
+            "unused_ips": max(sum_usable - sum_in_use, 0),
             "utilization": min(overall_util, 100.0),
             "prefix_count": len(rows),
         },

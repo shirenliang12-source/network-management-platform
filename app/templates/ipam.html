@@ -23,6 +23,7 @@
 </style>
 
 <div class="page-header">
+    <button class="btn btn-outline" onclick="checkIpamRelations()">检查关联关系（只读）</button>
     <h1>IP 地址规划 (IPAM)</h1>
     <div style="color:#888;font-size:13px;">NetBox 风格三层结构：聚合（大子网）→ 网段 → IP 地址；统一四态：规划 / 预分配 / 使用中 / 已停用</div>
 </div>
@@ -151,6 +152,8 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/js/asset_relations.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/dhcp_integration.js?v={{APP_VERSION}}"></script>
 <script>
 const STATUS_LIST = ["规划","预分配","使用中","已停用"];
 function statusBadgeIPAM(s){
@@ -243,10 +246,13 @@ function renderPfx(n, depth){
             ${n.vlan?`<span style="font-size:12px;color:#666;">VLAN ${escapeHtml(n.vlan)}</span>`:''}
             <span style="font-size:12px;color:#999;">已分配 ${n.allocated_ips}/${n.usable_ips}</span>
             ${utilBar(n.utilization,n.status)}
+            ${n.dhcp?.source_id?dhcpStatistics(n.dhcp):''}
             <span style="margin-left:auto;display:flex;gap:4px;">
                 <button class="btn btn-sm btn-outline" onclick="switchToIps(${n.id})">查看IP</button>
                 <button class="btn btn-sm btn-outline" onclick="addChildPrefix(${n.id})">+子网</button>
                 <button class="btn btn-sm btn-outline" onclick="editPrefix(${n.id})">编辑</button>
+                <button class="btn btn-sm btn-outline" onclick="showPrefixDhcp(${n.id})">DHCP 地址池</button>
+                <button class="btn btn-sm btn-outline" onclick="showAssetRelations('prefix',${n.id})">虚拟机反查</button>
             </span>
         </div>
         ${childHtml}
@@ -383,7 +389,7 @@ function renderPrefixes(){
     if(allPrefixes.length===0){ body.innerHTML='<tr><td colspan="8" class="empty-state">暂无网段，点击右上角"新增网段"</td></tr>'; return; }
     // 计算深度
     const byId = {}; allPrefixes.forEach(p=>byId[p.id]=p);
-    const depthOf = (p)=>{ let d=0; let cur=p; while(cur&&cur.parent_id){ d++; cur=byId[cur.parent_id]; if(!cur) break; } return d; };
+    const depthOf = (p)=>{ let d=0; let cur=p; const seen=new Set(); while(cur&&cur.parent_id&&!seen.has(cur.id)){seen.add(cur.id);d++;cur=byId[cur.parent_id];} return d; };
     const sorted = [...allPrefixes].sort((a,b)=> a.prefix.localeCompare(b.prefix));
     body.innerHTML = sorted.map(p=>{
         const d = depthOf(p);
@@ -394,12 +400,14 @@ function renderPrefixes(){
             <td>${p.role?escapeHtml(p.role):'<span style="color:#999;">-</span>'}</td>
             <td>${p.vlan?escapeHtml(p.vlan):'-'}</td>
             <td>${p.company?`<span class="badge badge-secondary">${escapeHtml(p.company)}</span>`:'-'}</td>
-            <td style="min-width:120px;">${utilBar(p.utilization,p.status)}<div style="font-size:11px;color:#999;">${p.allocated_ips}/${p.usable_ips} (${p.utilization}%)</div></td>
+            <td style="min-width:120px;">${utilBar(p.utilization,p.status)}<div style="font-size:11px;color:#999;">登记使用中 ${p.in_use_ips}/${p.usable_ips} (${p.utilization}%)</div>${p.dhcp?.source_id?dhcpStatistics(p.dhcp):''}</td>
             <td>${p.child_count>0?`<span class="badge badge-secondary">${p.child_count} 个子网</span>`:'-'}</td>
             <td>
                 <button class="btn btn-sm btn-outline" onclick="switchToIps(${p.id})">查看IP</button>
                 <button class="btn btn-sm btn-outline" onclick="addChildPrefix(${p.id})">+子网</button>
                 <button class="btn btn-sm btn-outline" onclick="editPrefix(${p.id})">编辑</button>
+                <button class="btn btn-sm btn-outline" onclick="showPrefixDhcp(${p.id})">DHCP 地址池</button>
+                <button class="btn btn-sm btn-outline" onclick="showAssetRelations('prefix',${p.id})">虚拟机反查</button>
                 <button class="btn btn-sm btn-danger" onclick="deletePrefix(${p.id})">删除</button>
             </td>
         </tr>`;
@@ -541,9 +549,10 @@ async function loadIps(){
     try{
         const list = await API.get(url);
         const pfx = (await API.get('/api/ipam/prefixes/'+currentPrefixId));
-        const unused = Math.max((pfx.usable_ips||0) - (pfx.allocated_ips||0), 0);
-        document.getElementById('ipMeta').innerHTML = `当前网段 <code>${escapeHtml(pfx.prefix)}</code> · 总地址 <b>${pfx.total_ips}</b> · 可用 <b>${pfx.usable_ips}</b> · 已使用 <b>${pfx.allocated_ips}</b> · 未使用 <b>${unused}</b> · 使用中 <b>${pfx.in_use_ips}</b> · 利用率 <b>${pfx.utilization}%</b>`;
+        const unused = Math.max((pfx.usable_ips||0) - (pfx.in_use_ips||0), 0);
+        document.getElementById('ipMeta').innerHTML = `当前网段 <code>${escapeHtml(pfx.prefix)}</code> · 可用 <b>${pfx.usable_ips}</b> · 已登记 <b>${pfx.allocated_ips}</b> · 未使用 <b>${unused}</b> · 使用中 <b>${pfx.in_use_ips}</b> · 利用率 <b>${pfx.utilization}%</b>`;
         renderStaticSummary(pfx);
+        document.getElementById('ipMeta').innerHTML += `<hr><button class="btn btn-sm btn-outline" onclick="showPrefixDhcp(${pfx.id})">关联 / 同步 DHCP 地址池</button> ${dhcpStatistics(pfx.dhcp)}<small>DHCP 地址池与登记占用分别统计，不相加。</small>`;
         const body = document.getElementById('ipTableBody');
         if(list.length===0){ body.innerHTML='<tr><td colspan="7" class="empty-state">该网段暂无 IP，可点"批量生成整段IP"或"新增IP"</td></tr>'; return; }
         body.innerHTML = list.map(ip=>`
@@ -556,12 +565,14 @@ async function loadIps(){
                 <td style="max-width:220px;word-break:break-all;">${ip.description?escapeHtml(ip.description):'<span style="color:#999;">-</span>'}</td>
                 <td>
                     <button class="btn btn-sm btn-outline" onclick="editIp(${ip.id})">编辑</button>
+                    <button class="btn btn-sm btn-outline" onclick="showAssetRelations('ip',${ip.id})">虚拟机反查</button>
                     <button class="btn btn-sm btn-danger" onclick="deleteIp(${ip.id})">删除</button>
                 </td>
             </tr>`).join('');
     }catch(e){ showToast('加载IP失败: '+e.message,'error'); }
 }
 function renderDeviceIpsCell(ip){
+    if (ip.assigned_vm_id) return `<span class="badge badge-success">虚拟机占用：${escapeHtml(ip.assigned_vm_name || String(ip.assigned_vm_id))}</span>`;
     if(!ip.assigned_device_name && !(ip.device_ips && ip.device_ips.length)) return '-';
     const name = ip.assigned_device_name || '';
     let html = `<div><span class="badge badge-secondary">${escapeHtml(name)}</span>`;
@@ -674,16 +685,16 @@ const IMPORT_META = {
   prefixes: {
     endpoint: '/api/ipam/prefixes/import',
     title: '导入网段',
-    cols: ['网段(CIDR)', '聚合(CIDR或名称)', '状态', '用途', 'VLAN', '公司', 'Firewall', 'Zone/Interface Name', '描述'],
-    example: '10.20.1.0/24,10.20.0.0/16,使用中,办公网,10,A公司,,Gi0/1,',
-    note: '必填：网段(CIDR)。聚合列若库中不存在会自动创建（需为合法 CIDR），否则留空。状态默认「规划」。',
+    cols: ['网段(CIDR)', '聚合(CIDR或名称)', '状态', '用途', 'VLAN', '公司', 'Firewall', 'Zone/Interface Name', '描述', '父网段(CIDR)', '分配池'],
+    example: '10.20.1.0/24,10.20.0.0/16,使用中,办公网,10,A公司,,Gi0/1,,,否',
+    note: '必填：网段(CIDR)。支持父网段列，父网段可在同一文件任意行；聚合必须包含该网段。任何错误均整批取消，不部分写入。未填写聚合则保留未关联，不猜测。已有记录不覆盖。',
   },
   ips: {
     endpoint: '/api/ipam/ips/import',
     title: '导入 IP 地址',
     cols: ['网段(CIDR)', 'IP地址', '状态', '分配类型', '关联设备', '设备名称', '设备型号', '设备IP', 'DNS名称', '描述'],
     example: '10.20.1.0/24,10.20.1.10,使用中,静态,核心交换机-01,SW-CORE-01,Cisco C2960X,10.20.1.10,sw1.office,网关',
-    note: '必填：网段(CIDR)、IP地址。网段若不存在会自动创建（默认规划态）。「关联设备」按设备名称匹配（可留空）；也可直接填「设备名称/设备型号/设备IP」手工录入，无需预先登记设备。分配类型默认「静态」，填 DHCP 则忽略设备。',
+    note: '必填：网段(CIDR)、IP地址。「关联设备」支持唯一设备名或管理 IP；重名不猜测。可增加聚合列消除同 CIDR 网段歧义。DHCP 不允许同时指定设备。任何错误均整批取消；已有记录不覆盖。',
   },
 };
 function openImportModal(){
@@ -724,10 +735,13 @@ function handleImportFile(e){
   if(!f) return;
   const reader = new FileReader();
   reader.onload = () => {
-    document.getElementById('importText').value = reader.result;
-    showImportPreview(reader.result);
+    let text;
+    try { text=new TextDecoder('utf-8',{fatal:true}).decode(reader.result); }
+    catch(e) { try { text=new TextDecoder('gb18030',{fatal:true}).decode(reader.result); } catch(error){showToast('文件编码无法识别，请另存 UTF-8 CSV','error');return;} }
+    document.getElementById('importText').value = text;
+    showImportPreview(text);
   };
-  reader.readAsText(f, 'utf-8');
+  reader.readAsArrayBuffer(f);
 }
 function showImportPreview(text){
   const el = document.getElementById('importPreview');
@@ -757,6 +771,15 @@ async function doImport(){
     else if(currentIpamTab === 'ips'){ loadPrefixOptions(); loadIps(); }
     loadStats();
   }catch(e){ showToast('导入失败: ' + e.message, 'error'); }
+}
+
+async function checkIpamRelations(){
+    try {
+        const result=await API.get('/api/ipam/relations-check');
+        const overlay=document.createElement('div');overlay.className='modal-overlay active';
+        overlay.innerHTML=`<div class="modal"><div class="modal-header"><h3>关联检查：${Number(result.count)} 项</h3><button class="btn" data-close>关闭</button></div><div class="modal-body"><p>只读检查，不修改原数据。请先备份，再按记录 ID 确认和调整。CSV 导入不用于自动重排旧关系。</p><pre style="white-space:pre-wrap">${escapeHtml(result.issues.join('\n')||'未发现当前检查覆盖的关系异常')}</pre></div></div>`;
+        document.body.appendChild(overlay);overlay.querySelector('[data-close]').onclick=()=>overlay.remove();
+    } catch(e){showToast(e.message,'error');}
 }
 
 async function exportIpam(level){

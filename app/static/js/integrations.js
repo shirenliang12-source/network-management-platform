@@ -184,6 +184,7 @@ async function importSelectedInventory() {
         return;
     }
     const button = document.getElementById('import-selected');
+    if (document.getElementById('update-existing').checked && !confirm('确认更新所选已导入记录？同步字段可能覆盖原值，已保护字段保持不变。')) return;
     button.disabled = true;
     try {
         const result = await API.post(`/api/integrations/${activeIntegrationSource}/import`, {
@@ -192,12 +193,13 @@ async function importSelectedInventory() {
         });
         showToast(result.message, 'success');
         for (const vm of integrationInventory.vms) {
-            if (selected.includes(String(vm.external_id))) {
+            if (selected.includes(String(vm.external_id)) && result.imported_ids[String(vm.external_id)]) {
                 vm.imported = true;
                 vm.local_id = result.imported_ids[String(vm.external_id)] || vm.local_id;
             }
         }
         renderIntegrationInventory(integrationInventory);
+        if (result.conflicts?.length) showToast(`有 ${result.conflicts.length} 条身份冲突，未新增或覆盖，请重新预览查看原因`, 'warning');
         loadSyncHistory();
     } catch (error) {
         showToast(`导入失败：${error.message}`, 'error');

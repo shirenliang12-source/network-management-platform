@@ -86,7 +86,7 @@ def _load_or_create_secret_key() -> str:
 class Settings(BaseSettings):
     # Application
     APP_NAME: str = "Cisco 网络自动化运维平台"
-    APP_VERSION: str = "1.9.41"
+    APP_VERSION: str = "1.9.50"
     HOST: str = "0.0.0.0"
     PORT: int = 9632
     DEBUG: bool = False

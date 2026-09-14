@@ -340,10 +340,10 @@ async function loadIpamUtilization() {
     try {
         const data = await API.get('/api/ipam/prefix-utilization');
         const o = data.overall || {};
-        document.getElementById('stat-ipam').textContent = (o.allocated_ips||0) + ' / ' + (o.unused_ips||0);
+        document.getElementById('stat-ipam').textContent = (o.in_use_ips||0) + ' / ' + (o.unused_ips||0);
         const summary = [
             {label:'可用地址总数', value:o.usable_ips||0, color:'#3b82f6'},
-            {label:'已使用(已分配)', value:o.allocated_ips||0, color:'#22c55e'},
+            {label:'使用中', value:o.in_use_ips||0, color:'#22c55e'},
             {label:'未使用', value:o.unused_ips||0, color:'#9ca3af'},
             {label:'平均利用率', value:(o.utilization||0)+'%', color:'#f59e0b'},
         ];
@@ -367,7 +367,7 @@ async function loadIpamUtilization() {
                 <td>${ipamStatusBadge(r.status)}</td>
                 <td>${escapeHtml(r.role||'-')}</td>
                 <td>${r.total_ips} / ${r.usable_ips}</td>
-                <td><b>${r.allocated_ips}</b></td>
+                <td><b>${r.in_use_ips}</b></td>
                 <td>${r.unused_ips}</td>
                 <td>
                     <div style="display:flex;align-items:center;gap:8px;">

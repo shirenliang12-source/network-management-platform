@@ -6,7 +6,7 @@
 """
 import logging
 import re
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -20,6 +20,12 @@ from app.schemas import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/assets", tags=["assets"])
+
+
+@router.get('/servers/{server_id}/relations')
+def server_relations(server_id: int, request: Request, db: Session = Depends(get_db)):
+    from app.services.asset_relations import relations, request_modules
+    return relations(db, 'server', server_id, request_modules(request))
 
 ASSET_STATUSES = ["在用", "备用", "停用", "报废"]
 IT_TYPES = ["打印机", "无线AP", "IP电话", "摄像头", "其他"]
@@ -347,6 +353,9 @@ def update_server(asset_id: int, payload: ServerAssetUpdate, db: Session = Depen
 
 @router.delete("/servers/{asset_id}")
 def delete_server(asset_id: int, db: Session = Depends(get_db)):
+    from app.models import VMInstance
+    if db.query(VMInstance).filter_by(host_id=asset_id).first():
+        raise HTTPException(409, '硬件仍关联虚拟机，请先调整虚拟机宿主关系')
     s = db.query(ServerAsset).get(asset_id)
     if not s:
         raise HTTPException(status_code=404, detail="资产不存在")

@@ -243,6 +243,8 @@ def _add_apscheduler_job(sched: ScheduleConfig):
 
 def _sync_next_runs():
     """Update each ScheduleConfig.next_run from the running APScheduler jobs."""
+    from app.services.windows_dhcp import scheduled_sync
+    scheduler.add_job(scheduled_sync, 'interval', minutes=1, id='windows_dhcp_sync', replace_existing=True, max_instances=1, coalesce=True)
     db = SessionLocal()
     try:
         for sched in db.query(ScheduleConfig).all():

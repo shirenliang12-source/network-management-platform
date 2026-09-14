@@ -110,6 +110,8 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/js/rack_view.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/asset_relations.js?v={{APP_VERSION}}"></script>
 <script>
 const DC_ROLES = ["服务器区", "网络区", "存储区", "布线区", "安全区", "其他"];
 const DC_TYPES = ["机柜", "开放式机架", "壁挂式"];
@@ -144,6 +146,7 @@ async function loadSites() {
                     <td><b>${s.rack_count}</b> 台</td>
                     <td>
                         <button class="btn btn-sm btn-outline" onclick="editSite(${s.id})">编辑</button>
+                        <button class="btn btn-sm btn-outline" onclick="showAssetRelations('site',${s.id})">关联资产</button>
                         <button class="btn btn-sm btn-danger" onclick="deleteSite(${s.id})">删除</button>
                     </td>
                 </tr>`).join('');
@@ -186,6 +189,7 @@ async function loadRacks() {
                 <td>${escapeHtml(r.location_detail||'-')}</td>
                 <td>
                     <button class="btn btn-sm btn-outline" onclick="editRack(${r.id})">编辑</button>
+                    <button class="btn btn-sm btn-outline" onclick="showAssetRelations('rack',${r.id})">硬件 / 虚拟机反查</button>
                     <button class="btn btn-sm btn-danger" onclick="deleteRack(${r.id})">删除</button>
                 </td>
             </tr>`).join('');
@@ -235,39 +239,6 @@ async function loadRackView() {
 }
 
 // 渲染单个机柜的 U 位视图（叠加服务器/存储占用）
-function rackUHTML(rack, servers) {
-    const u = Math.max(1, rack.u_height || 1);
-    const occ = new Array(u + 1).fill(null);
-    (servers || []).forEach(s => {
-        const lo = s.u_start || 1;
-        const hi = lo + (s.u_size || 1) - 1;
-        for (let i = lo; i <= hi && i <= u; i++) occ[i] = s;
-    });
-    const barH = Math.min(u * 7, 320);
-    const cellH = barH / u;
-    const catColor = { '服务器':'#3b82f6', '存储':'#8b5cf6' };
-    let cells = '', labels = '';
-    for (let i = u; i >= 1; i--) {
-        const s = occ[i];
-        if (s) {
-            const c = catColor[s.category] || '#3b82f6';
-            cells += `<div style="height:${cellH}px;background:linear-gradient(${c},${c}cc);border:1px solid ${c};border-radius:3px;margin:1px 0;color:#fff;font-size:10px;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:0 2px;" title="${escapeHtml(s.name)} (U${i})">${escapeHtml(s.name)}</div>`;
-        } else {
-            cells += `<div style="height:${cellH}px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:3px;margin:1px 0;"></div>`;
-        }
-        labels += `<div style="height:${cellH}px;font-size:9px;color:#94a3b8;display:flex;align-items:center;justify-content:flex-end;padding-right:3px;">U${i}</div>`;
-    }
-    return `
-    <div style="width:180px;border:1px solid #e6eaf0;border-radius:10px;padding:10px;text-align:center;background:#fff;">
-        <div style="font-weight:700;">${escapeHtml(rack.rack_number||'')}</div>
-        <div style="color:#888;font-size:12px;margin-bottom:6px;height:16px;overflow:hidden;">${escapeHtml(rack.name||'')}</div>
-        <div style="display:flex;justify-content:center;">
-            <div style="width:24px;">${labels}</div>
-            <div style="width:120px;">${cells}</div>
-        </div>
-        <div style="margin-top:6px;font-size:11px;color:#666;">${u}U · ${escapeHtml(rack.site_name||'')}</div>
-    </div>`;
-}
 
 // ---------- Site modal ----------
 function siteModalHTML(title, s) {

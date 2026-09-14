@@ -46,6 +46,8 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/js/windows_dhcp.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/dhcp_auth.js?v={{APP_VERSION}}"></script>
 <script>
 let items = [];
 
@@ -107,6 +109,8 @@ function renderTable() {
             <td>${renderInvDeviceCell(it)}</td>
             <td>
                 <button class="btn btn-sm btn-outline" onclick="showEditModal(${it.id})">编辑</button>
+                <button class="btn btn-sm btn-outline" onclick="showWindowsDhcp(${it.id})">DHCP 地址池</button>
+                ${it.dhcp?.mode==='DHCP' ? `<div style="color:${it.dhcp.error||it.dhcp.snapshot?.warning?'#b91c1c':'inherit'}">${it.dhcp.error?'⚠ 同步失败（旧数据）':it.dhcp.snapshot?.warning?'⚠ 地址池预警':'DHCP'} ${it.dhcp.snapshot?`${Number(it.dhcp.snapshot.percent)}% · 空闲 ${Number(it.dhcp.snapshot.free)}`:'待同步'}</div>`:''}
                 <button class="btn btn-sm btn-danger" onclick="deleteItem(${it.id})">删除</button>
             </td>
         </tr>
@@ -344,6 +348,7 @@ async function doImport() {
         const msg = `导入完成：新增 ${res.created} 条，跳过 ${res.skipped} 行${res.errors && res.errors.length ? '，'+res.errors.length+' 行出错' : ''}`;
         showToast(msg, res.created > 0 ? 'success' : 'warning');
         document.querySelector('.modal-overlay').remove();
+        showImportDuplicates(res);
         loadItems();
         loadCompanies();
     } catch (e) {

@@ -37,14 +37,14 @@ COMMANDS_FILE = DATA_DIR / "commands.json"
 
 # Reserved top-level keys (underscore prefix) used for metadata within
 # commands.json. User-defined device types must NOT clash with these.
-RESERVED_META_KEYS = ("_type_labels",)
+RESERVED_META_KEYS = ("_type_labels", "_type_drivers")
 
 # Built-in default device types (commands populated from DEFAULT_COMMANDS).
 # Their labels (and the labels of any custom types added at runtime) live in
 # commands.json under the reserved key "_type_labels". When that key is
 # missing (e.g. commands.json from an older release), we fall back to the
 # hard-coded BUILTIN_DEVICE_TYPE_LABELS dict below.
-BUILTIN_DEVICE_TYPE_KEYS = ("cisco_ios", "cisco_xe", "cisco_nxos", "cisco_wlc_ssh")
+BUILTIN_DEVICE_TYPE_KEYS = ("cisco_ios", "cisco_xe", "cisco_nxos", "cisco_wlc_ssh", "fortinet", "cisco_asa", "paloalto_panos")
 
 # Display labels for the built-in types. Acts as the source of truth for the
 # 4 tabs that ship by default; custom types take their labels from
@@ -54,6 +54,9 @@ BUILTIN_DEVICE_TYPE_LABELS = {
     "cisco_xe": "Cisco IOS-XE",
     "cisco_nxos": "Cisco NX-OS",
     "cisco_wlc_ssh": "Cisco WLC (AireOS)",
+    "fortinet": "Fortinet FortiGate",
+    "cisco_asa": "Cisco ASA Firewall",
+    "paloalto_panos": "Palo Alto PAN-OS",
 }
 
 # Legacy constant kept for back-compat with code that imported the old
@@ -299,6 +302,21 @@ DEFAULT_COMMANDS = {
     },
 }
 
+# Explicit blanks disable unsupported commands instead of sending IOS fallbacks.
+for _driver, _commands in {
+    'fortinet': {'running_config': 'show full-configuration', 'show_version': 'get system status',
+                 'show_interfaces': 'get system interface physical', 'show_cpu': 'get system performance status',
+                 'show_memory': 'get system performance status'},
+    'cisco_asa': {'running_config': 'show running-config', 'show_version': 'show version',
+                  'show_inventory': 'show inventory', 'show_interfaces': 'show interface ip brief',
+                  'show_cpu': 'show cpu usage', 'show_memory': 'show memory'},
+    'paloalto_panos': {'running_config': 'show config running', 'show_version': 'show system info',
+                       'show_interfaces': 'show interface all', 'show_cpu': 'show system resources',
+                       'show_memory': 'show system resources'},
+}.items():
+    DEFAULT_COMMANDS[_driver] = {key: {'command': _commands.get(key, ''), 'description': value['description'], 'delay_factor': 2.0}
+                                 for key, value in DEFAULT_COMMANDS['cisco_ios'].items()}
+
 # Human-readable labels for command keys
 COMMAND_LABELS = {
     "running_config": "运行配置备份",
@@ -417,10 +435,7 @@ def save_commands(commands: dict):
         # Drop any labels for types that no longer exist, otherwise
         # preserve the user's custom-name edits.
         kept_labels = {k: v for k, v in existing[_TYPE_LABEL_KEY].items() if k in commands}
-        merged_labels = {**kept_labels, **{
-            k: BUILTIN_DEVICE_TYPE_LABELS.get(k, v) for k, v in kept_labels.items()
-            if k in BUILTIN_DEVICE_TYPE_LABELS
-        }}
+        merged_labels = kept_labels
         existing[_TYPE_LABEL_KEY] = merged_labels
     # Replace the command payloads.
     for key, value in commands.items():
@@ -467,7 +482,7 @@ def _slugify(label: str) -> str:
     return s or "custom_type"
 
 
-def add_device_type(label: str, commands: dict | None = None) -> dict:
+def add_device_type(label: str, commands: dict | None = None, base_on: str = "cisco_ios") -> dict:
     """Register a new device type.
 
     Args:
@@ -502,6 +517,7 @@ def add_device_type(label: str, commands: dict | None = None) -> dict:
 
     initial_cmds = commands or json.loads(json.dumps(DEFAULT_COMMANDS["cisco_ios"]))
     existing_data[key] = initial_cmds
+    existing_data.setdefault("_type_drivers", {})[key] = resolve_device_driver(base_on)
     existing_labels[key] = label
     existing_data[_TYPE_LABEL_KEY] = existing_labels
     _write_raw(existing_data)
@@ -523,6 +539,7 @@ def delete_device_type(type_key: str) -> dict:
     if type_key not in data:
         raise ValueError(f"设备类型「{type_key}」不存在")
     data.pop(type_key, None)
+    data.get("_type_drivers", {}).pop(type_key, None)
     if _TYPE_LABEL_KEY in data and isinstance(data[_TYPE_LABEL_KEY], dict):
         data[_TYPE_LABEL_KEY].pop(type_key, None)
     _write_raw(data)
@@ -556,12 +573,43 @@ def list_device_types() -> list:
         labels = {}
     merged = []
     for k in BUILTIN_DEVICE_TYPE_KEYS:
-        merged.append({"key": k, "label": BUILTIN_DEVICE_TYPE_LABELS[k], "builtin": True})
+        merged.append({"key": k, "label": labels.get(k, BUILTIN_DEVICE_TYPE_LABELS[k]), "builtin": True})
     for k, v in labels.items():
         if k in BUILTIN_DEVICE_TYPE_LABELS:
             continue
         merged.append({"key": k, "label": str(v), "builtin": False})
     return merged
+
+
+def resolve_device_driver(type_key: str) -> str:
+    """Display/command types are not necessarily Netmiko driver names."""
+    aliases = {"cisco_ios_xe": "cisco_xe", "cisco_wlc": "cisco_wlc_ssh", "cisco_ap": "cisco_ios"}
+    data = _load_raw()
+    driver = data.get("_type_drivers", {}).get(type_key)
+    if driver:
+        return aliases.get(driver, driver)
+    from netmiko.ssh_dispatcher import CLASS_MAPPER
+    resolved = aliases.get(type_key, type_key)
+    if resolved in CLASS_MAPPER:
+        return resolved
+    # Legacy custom types were created from the IOS command template.
+    if type_key in data and isinstance(data[type_key], dict):
+        for key in BUILTIN_DEVICE_TYPE_KEYS:
+            if data[type_key] == DEFAULT_COMMANDS[key]:
+                return key
+        return "cisco_ios"
+    raise ValueError(f"设备类型 {type_key} 未配置连接驱动，请在设置中维护设备类型")
+
+
+def set_device_driver(type_key: str, driver: str):
+    from netmiko.ssh_dispatcher import CLASS_MAPPER
+    if type_key not in load_commands():
+        raise ValueError("设备类型不存在")
+    if driver not in CLASS_MAPPER or "telnet" in driver:
+        raise ValueError("请选择有效的 SSH 连接驱动")
+    data = _load_raw()
+    data.setdefault("_type_drivers", {})[type_key] = driver
+    _write_raw(data)
 
 
 # ---- Command lookup (legacy) ----
@@ -630,6 +678,8 @@ def get_command_with_fallbacks(device_type: str, command_key: str) -> list:
     on the device) and we want to try alternative commands automatically.
     """
     primary = get_command(device_type, command_key)
+    if resolve_device_driver(device_type) in {'fortinet', 'cisco_asa', 'paloalto_panos'}:
+        return [primary] if primary else []
     fallbacks = [c for c in COMMAND_FALLBACKS.get(command_key, []) if c != primary]
     return [primary] + fallbacks
 
@@ -645,4 +695,4 @@ def _map_device_type(device_type: str) -> str:
         "cisco_wlc_ssh": "cisco_wlc_ssh",
         "cisco_ap": "cisco_ios",
     }
-    return mapping.get(device_type, "cisco_ios")
+    return mapping.get(device_type, device_type)

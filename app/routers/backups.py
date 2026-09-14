@@ -22,6 +22,44 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/backups", tags=["backups"])
 
 
+from app.api_models import StrictRequest
+from pydantic import Field
+
+
+class RetentionRequest(StrictRequest):
+    keep: int | None = Field(default=None, ge=0, le=100000)
+
+
+@router.get('/retention/devices')
+def retention_devices(db: Session = Depends(get_db)):
+    from app.services.backup_retention import policy
+    return [{'id': d.id, 'name': d.name, 'keep': policy(db, d.id),
+             'count': db.query(ConfigBackup).filter_by(device_id=d.id).count()}
+            for d in db.query(Device).order_by(Device.name).all()]
+
+
+@router.put('/retention/devices/{device_id}')
+def set_retention(device_id: int, payload: RetentionRequest, request: Request, db: Session = Depends(get_db)):
+    import json
+    from app.models import SystemSetting
+    if not db.get(Device, device_id):
+        raise HTTPException(404, '设备不存在')
+    key = f'backup_retention:{device_id}'
+    row = db.get(SystemSetting, key)
+    if payload.keep is None:
+        if row:
+            db.delete(row)
+    else:
+        if not row:
+            row = SystemSetting(key=key)
+            db.add(row)
+        row.value = json.dumps({'keep': payload.keep})
+    db.commit()
+    request.state.audit_action = 'backups.retention'
+    request.state.audit_detail = {'device_id': device_id, 'keep': payload.keep}
+    return {'ok': True, 'message': '策略已保存，下次成功备份后执行；基线额外保留'}
+
+
 @router.post("/run")
 def run_backup(
     device_ids: List[int] = Query(...),

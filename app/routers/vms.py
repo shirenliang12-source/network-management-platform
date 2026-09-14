@@ -8,7 +8,8 @@ import io
 import json
 import logging
 import re
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request
+from app.api_models import InventorySelectionRequest
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -183,6 +184,27 @@ def vm_summary(db: Session = Depends(get_db)):
     return VMSummary(total=total, by_os_type=by_os_type, by_status=by_status)
 
 
+@router.post("/batch-delete")
+def batch_delete_vms(payload: InventorySelectionRequest, request: Request, db: Session = Depends(get_db)):
+    from app.services.ip_allocation import guard_vm_delete
+    guard_vm_delete(db, payload.ids)
+    rows = db.query(VMInstance).filter(VMInstance.id.in_(payload.ids)).all()
+    if len(rows) != len(payload.ids):
+        raise HTTPException(409, "部分虚拟机已不存在，请刷新后重新选择；本次未删除")
+    for row in rows:
+        db.delete(row)
+    db.commit()
+    request.state.audit_action = "vms.batch_delete"
+    request.state.audit_detail = {"ids": payload.ids, "count": len(rows)}
+    return {"deleted": len(rows)}
+
+
+@router.get("/{vm_id}/relations")
+def vm_relations(vm_id: int, request: Request, db: Session = Depends(get_db)):
+    from app.services.asset_relations import relations, request_modules
+    return relations(db, 'vm', vm_id, request_modules(request))
+
+
 @router.get("/{vm_id}", response_model=VMInstanceResponse)
 def get_vm(vm_id: int, db: Session = Depends(get_db)):
     v = db.query(VMInstance).get(vm_id)
@@ -252,6 +274,9 @@ def update_vm(vm_id: int, payload: VMInstanceUpdate, db: Session = Depends(get_d
             host_name = _resolve_host_name(db, host_id, host_name)
         data["host_name"] = host_name
     for key, value in data.items():
+        if key == "host_id":
+            v.host_id = value
+            continue
         if value is None:
             continue
         if key == "status":
@@ -280,6 +305,8 @@ def update_vm(vm_id: int, payload: VMInstanceUpdate, db: Session = Depends(get_d
 
 @router.delete("/{vm_id}")
 def delete_vm(vm_id: int, db: Session = Depends(get_db)):
+    from app.services.ip_allocation import guard_vm_delete
+    guard_vm_delete(db, [vm_id])
     v = db.query(VMInstance).get(vm_id)
     if not v:
         raise HTTPException(status_code=404, detail="虚拟机不存在")
@@ -343,90 +370,13 @@ def export_vms_csv(db: Session = Depends(get_db)):
 
 @router.post("/import-csv")
 async def import_vms_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """从 CSV 批量导入虚拟机。
-
-    列（顺序见 VM_CSV_COLUMNS）：name, function, os_type, os_version, status,
-    host_name, management_ip, ip2..ip5, cpu, memory, disk_size, notes。
-    - name 必填；重复名称(name)自动跳过。
-    - host_name 若与「服务器存储」已有宿主机名称一致，自动关联 host_id。
-    - os_type / status 非法值回退到默认（Linux / 运行中）。
-    """
-    content = await file.read()
+    from app.services.csv_inventory_import import run_import
+    content = await file.read(10_000_001)
     try:
-        text = content.decode("utf-8-sig")
+        raw = content.decode("utf-8-sig")
     except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="文件编码无法识别，请使用 UTF-8 编码的 CSV")
-    reader = csv.DictReader(io.StringIO(text))
-
-    imported = 0
-    skipped = 0
-    errors = []
-    for row_num, row in enumerate(reader, start=2):
-        try:
-            name = (row.get("name") or "").strip()
-            if not name:
-                errors.append(f"第 {row_num} 行: 缺少服务器名称(name)")
-                continue
-            if db.query(VMInstance).filter(VMInstance.name == name).first():
-                skipped += 1
-                continue
-
-            # 多网卡额外 IP：ip2, ip3, ... ip5
-            extra_by_idx = {}
-            for key in row.keys():
-                m = re.match(r"^ip(\d+)$", (key or "").strip(), re.IGNORECASE)
-                if m and int(m.group(1)) >= 2:
-                    val = (row.get(key) or "").strip()
-                    if val:
-                        extra_by_idx[int(m.group(1))] = val
-            extras = [extra_by_idx[n] for n in sorted(extra_by_idx)]
-
-            # 宿主机名称 -> host_id（匹配「服务器存储」已有宿主机）
-            host_name = (row.get("host_name") or "").strip()
-            host_id = None
-            if host_name:
-                s = db.query(ServerAsset).filter(ServerAsset.name == host_name).first()
-                if s:
-                    host_id = s.id
-
-            v = VMInstance(
-                name=name,
-                function=(row.get("function") or "").strip(),
-                os_type=_valid((row.get("os_type") or "").strip(), VM_OS_TYPES, "Linux"),
-                os_version=(row.get("os_version") or "").strip(),
-                status=_valid((row.get("status") or "").strip(), VM_STATUSES, "运行中"),
-                host_id=host_id,
-                host_name=host_name,
-                cpu=(row.get("cpu") or "").strip(),
-                memory=(row.get("memory") or "").strip(),
-                disk_size=(row.get("disk_size") or "").strip(),
-                disk_count=0,  # 占位，下方按明细条数覆盖
-                disks="",
-                storage_lun=(row.get("storage_lun") or "").strip(),
-                management_ip=(row.get("management_ip") or "").strip(),
-                notes=(row.get("notes") or "").strip(),
-            )
-            # 磁盘明细：有明细时数量自动取明细条数，否则用 disk_count 列
-            disks_json = _dump_disks(_parse_disks_csv(row.get("disks") or ""))
-            v.disks = disks_json
-            if disks_json:
-                v.disk_count = len(_parse_disks(disks_json))
-            else:
-                v.disk_count = int(row.get("disk_count") or 1) if (row.get("disk_count") or "").strip().isdigit() else 1
-            db.add(v)
-            db.flush()
-            _set_vm_ips(db, v, extras)
-            imported += 1
-        except Exception as e:
-            db.rollback()
-            errors.append(f"第 {row_num} 行: {str(e)}")
-    db.commit()
-    return {
-        "imported": imported,
-        "skipped": skipped,
-        "errors": errors,
-        "message": f"成功导入 {imported} 条，跳过重复 {skipped} 条，失败 {len(errors)} 条",
-    }
+        raise HTTPException(400, "请使用 UTF-8 CSV") from None
+    return run_import(db, "vms", raw)
 
 def _vm_response(db: Session, v: VMInstance) -> VMInstanceResponse:
     return VMInstanceResponse(

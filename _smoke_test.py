@@ -12,6 +12,8 @@ import json
 import re
 import sqlite3
 import textwrap
+import tempfile
+import socket
 
 try:
     import sitecustomize
@@ -20,8 +22,12 @@ except ImportError:
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SRC_EXE = os.path.join(ROOT, "dist_onefile", "CiscoNetworkManager.exe")
-SMOKE = os.path.join(ROOT, "_smoke")
-PORT = 8899
+SMOKE_ROOT = os.path.join(ROOT, "_smoke")
+os.makedirs(SMOKE_ROOT, exist_ok=True)
+SMOKE = tempfile.mkdtemp(prefix="run-", dir=SMOKE_ROOT)
+with socket.socket() as probe:
+    probe.bind(("127.0.0.1", 0))
+    PORT = probe.getsockname()[1]
 BASE = f"http://127.0.0.1:{PORT}"
 with open(os.path.join(ROOT, "app", "config.py"), encoding="utf-8") as _config_file:
     _version_match = re.search(
@@ -31,14 +37,10 @@ EXPECTED_VERSION = _version_match.group(1) if _version_match else ""
 
 
 def _force_rmtree(p):
-    if sitecustomize is not None:
-        if hasattr(sitecustomize, "_orig_remove"):
-            os.remove = sitecustomize._orig_remove
-            os.unlink = sitecustomize._orig_unlink
-        if hasattr(sitecustomize, "_orig_rmdir"):
-            os.rmdir = sitecustomize._orig_rmdir
-        if hasattr(sitecustomize, "_orig_shutil_rmtree"):
-            shutil.rmtree = sitecustomize._orig_shutil_rmtree
+    target = os.path.realpath(p)
+    allowed = os.path.realpath(SMOKE_ROOT)
+    if os.path.commonpath([target, allowed]) != allowed or target == allowed:
+        raise ValueError("Refusing to remove a path outside this isolated smoke run")
     if os.path.isdir(p):
         shutil.rmtree(p)
 
@@ -151,7 +153,7 @@ def main():
         status_path = os.path.join(data_dir, "backups", "upgrade_status.json")
         with open(status_path, encoding="utf-8") as handle:
             upgrade_status = json.load(handle)
-        ok = (revision == "20260908_0005" and marker == "preserved-from-v1.9.36"
+        ok = (revision == "20260910_0006" and marker == "preserved-from-v1.9.36"
               and upgrade_status.get("status") == "success")
         passed += log("legacy v1.9.36 data upgraded and preserved", ok, f"revision={revision}")
         failed += (0 if ok else 1)
@@ -184,6 +186,147 @@ def main():
         passed += log("login generated admin password -> 200 + cookie", ok, f"code={st} cookie={bool(ck)}")
         failed += (0 if ok else 1)
         admin_cookie = ck.split(";")[0] if ck else None
+
+        st, catalog_body, _ = req("GET", "/api/devices/catalog/types", cookie=admin_cookie)
+        ok = st == 200 and bool(json.loads(catalog_body).get("device_types"))
+        passed += log("device type catalog endpoint", ok)
+        failed += int(not ok)
+        st, driver_body, _ = req("GET", "/api/commands/types/drivers", cookie=admin_cookie)
+        ok = st == 200 and 'cisco_ios' in json.loads(driver_body).get('drivers', [])
+        passed += log("frozen Netmiko driver catalog", ok)
+        failed += int(not ok)
+        st, js_body, _ = req("GET", "/static/js/device_inventory.js", cookie=admin_cookie)
+        ok = st == 200 and 'showDeviceNeighbors' in js_body and 'deleteSelectedDevices' in js_body
+        passed += log("inventory workflows bundled", ok)
+        failed += int(not ok)
+        ok = st == 200 and 'class="modal-overlay active"' in js_body and '进入设备继续发现' in js_body
+        passed += log("visible inventory modals and continuation links bundled", ok)
+        failed += int(not ok)
+        create_st, created_body, _ = req("POST", "/api/devices", {
+            "name": "smoke-detail-only", "ip_address": "192.0.2.123",
+            "device_type": "cisco_ios", "is_active": False,
+        }, cookie=admin_cookie)
+        if create_st == 200:
+            detail_id = json.loads(created_body)['id']
+            page_st, detail_body, _ = req("GET", f"/devices/{detail_id}", cookie=admin_cookie)
+            ok = page_st == 200 and 'addDetailNeighbor' in detail_body and '进入设备继续发现' in detail_body
+        else:
+            ok = False
+        passed += log("single-device manual neighbor workflow bundled", ok)
+        failed += int(not ok)
+        ip_st, ip_body, _ = req("POST", "/api/ip-inventory", {
+            "ip_segment": "192.0.2.1-192.0.2.254", "remarks": "中文备注" * 2000,
+        }, cookie=admin_cookie)
+        ip_ok = ip_st == 200
+        if ip_ok:
+            ip_id = json.loads(ip_body)['id']
+            edit_st, _, _ = req("PUT", f"/api/ip-inventory/{ip_id}", {
+                "device_id": None, "sort_order": None,
+            }, cookie=admin_cookie)
+            list_st, list_body, _ = req("GET", "/api/ip-inventory", cookie=admin_cookie)
+            ip_ok = edit_st == 200 and list_st == 200 and any(
+                row['id'] == ip_id and row['remarks'] == "中文备注" * 2000 and row['device_id'] is None
+                for row in json.loads(list_body)
+            )
+        passed += log("IP inventory long text create/edit/reload", ip_ok)
+        failed += int(not ip_ok)
+        vm_st, vm_body, _ = req("POST", "/api/vms", {
+            "name": "smoke-relation-vm", "management_ip": "192.0.2.20",
+            "additional_ips": ["2001:db8::20"],
+        }, cookie=admin_cookie)
+        relation_ok = vm_st == 200
+        if relation_ok:
+            vm_id = json.loads(vm_body)['id']
+            rel_st, rel_body, _ = req("GET", f"/api/vms/{vm_id}/relations", cookie=admin_cookie)
+            js_st, rel_js, _ = req("GET", "/static/js/asset_relations.js", cookie=admin_cookie)
+            relation_ok = rel_st == 200 and json.loads(rel_body)['root']['id'] == vm_id and js_st == 200 and 'modal-overlay active' in rel_js
+        passed += log("cross-module relations service and visible modal bundled", relation_ok)
+        failed += int(not relation_ok)
+        p_st, p_body, _ = req('POST', '/api/ipam/prefixes', {'prefix':'192.0.2.0/24'}, cookie=admin_cookie)
+        claim_ok = p_st == 200 and vm_st == 200
+        if claim_ok:
+            prefix_id = json.loads(p_body)['id']
+            allocation = {'prefix_id':prefix_id, 'vm_id':vm_id, 'address':'192.0.2.20'}
+            c_st, c_body, _ = req('POST', '/api/ipam/vm-allocation', allocation, cookie=admin_cookie)
+            if c_st == 200:
+                claimed_id = json.loads(c_body)['id']
+                read_st, read_body, _ = req('GET', f'/api/ipam/ips/{claimed_id}', cookie=admin_cookie)
+                delete_st, _, _ = req('DELETE', f'/api/ipam/ips/{claimed_id}', cookie=admin_cookie)
+                release_st, _, _ = req('POST', '/api/ipam/vm-allocation', {**allocation,'release':True}, cookie=admin_cookie)
+                claim_ok = read_st == 200 and json.loads(read_body)['assigned_vm_id'] == vm_id and delete_st == 409 and release_st == 200
+            else:
+                claim_ok = False
+        passed += log('manual VM occupation persisted, protected and released', claim_ok)
+        failed += int(not claim_ok)
+        dhcp_st, dhcp_body, _ = req('PUT', f'/api/ip-inventory/{ip_id}/dhcp', {'mode':'DHCP','server':'dhcp.example.invalid','scope':'192.0.2.0','threshold':80,'interval':0}, cookie=admin_cookie)
+        dhcp_get, _, _ = req('GET', f'/api/ip-inventory/{ip_id}/dhcp', cookie=admin_cookie)
+        dhcp_ok = dhcp_st == 200 and dhcp_get == 200 and json.loads(dhcp_body)['interval'] == 0
+        passed += log('DHCP config persisted (automatic sync disabled; no network calls)', dhcp_ok)
+        failed += int(not dhcp_ok)
+        central_st, central_body, _ = req('GET', '/api/integrations/dhcp', cookie=admin_cookie)
+        integration_page_st, integration_page, _ = req('GET', '/integrations', cookie=admin_cookie)
+        planning_st, planning_page, _ = req('GET', '/ipam', cookie=admin_cookie)
+        shared_ok = central_st == 200 and any(r['id']==f'inventory-{ip_id}' and r['legacy'] for r in json.loads(central_body))
+        shared_ok = shared_ok and integration_page_st == 200 and 'dhcp-integration-list' in integration_page and planning_st == 200 and 'showPrefixDhcp' in planning_page
+        passed += log('DHCP integration UI, IPAM UI and legacy shared source bundled', shared_ok)
+        failed += int(not shared_ok)
+        pool_st, pool_body, _ = req('POST', '/api/integrations/dhcp', {'mode':'DHCP','name':'smoke pool','server':'dhcp2.example.invalid','scope':'192.0.2.0','threshold':85,'interval':0}, cookie=admin_cookie)
+        pool_ok = pool_st == 200
+        if pool_ok:
+            source_id=json.loads(pool_body)['id']
+            bind_st, _, _ = req('PUT', f'/api/ipam/prefixes/{prefix_id}/dhcp', {'source_id':source_id}, cookie=admin_cookie)
+            pool_ok = bind_st == 409  # unsynchronized sources cannot be bound
+        passed += log('DHCP central config persists and unsynchronized IPAM binding is rejected', pool_ok)
+        failed += int(not pool_ok)
+        credential_st, credential_body, _ = req('PUT', f'/api/integrations/dhcp/{source_id}', {'mode':'DHCP','name':'smoke pool','server':'dhcp2.example.invalid','scope':'192.0.2.0','threshold':85,'interval':0,'auth_mode':'manual','username':'SMOKE\\reader','password':'offline-test-only-password'}, cookie=admin_cookie)
+        credentials_ok = credential_st == 200 and json.loads(credential_body).get('password_configured') and 'password_enc' not in credential_body and 'offline-test-only-password' not in credential_body
+        passed += log('DHCP manual credentials saved encrypted and redacted (no network calls)', credentials_ok)
+        failed += int(not credentials_ok)
+        csv_body = '网段,描述\n' + '\n'.join(f'198.19.{i}.1/24,'+'smoke-import-'*8 for i in range(60))
+        import_st, import_body, _ = req('POST', '/api/ipam/prefixes/import', {'csv':csv_body}, cookie=admin_cookie)
+        check_st, check_body, _ = req('GET', '/api/ipam/relations-check', cookie=admin_cookie)
+        import_ok = import_st == 200 and json.loads(import_body).get('created') == 60 and check_st == 200 and json.loads(check_body).get('modified') is False
+        passed += log('IPAM large CSV import and read-only relationship audit bundled', import_ok)
+        failed += int(not import_ok)
+        retention_st, _, _ = req('PUT', f'/api/backups/retention/devices/{detail_id}', {'keep':5}, cookie=admin_cookie)
+        retention_get, retention_body, _ = req('GET', '/api/backups/retention/devices', cookie=admin_cookie)
+        retention_ok = retention_st == 200 and retention_get == 200 and any(r['id']==detail_id and r['keep']==5 for r in json.loads(retention_body))
+        passed += log('per-device backup retention setting persisted', retention_ok)
+        failed += int(not retention_ok)
+        st, _, _ = req("PUT", "/api/devices/companies", {"names": ["Smoke Company"]}, cookie=admin_cookie)
+        read_st, companies_body, _ = req("GET", "/api/devices/companies", cookie=admin_cookie)
+        ok = st == 200 and read_st == 200 and any(c['company'] == 'Smoke Company' for c in json.loads(companies_body))
+        passed += log("company catalog persists in upgraded database", ok)
+        failed += int(not ok)
+        firewall_config={'name':'offline-firewall','provider':'fortinet','server':'fw.example.invalid','scope':'198.18.251.0','interface':'port5','vdom':'office','api_token':'smoke-fake-token','mode':'DHCP','interval':0,'threshold':80}
+        fw_status,fw_body,_=req('POST','/api/integrations/dhcp',firewall_config,cookie=admin_cookie)
+        fw_data=json.loads(fw_body)
+        duplicate_status,_,_=req('POST','/api/integrations/dhcp',firewall_config,cookie=admin_cookie)
+        second_status,_,_=req('POST','/api/integrations/dhcp',{**firewall_config,'vdom':'guest'},cookie=admin_cookie)
+        ok=fw_status==200 and fw_data.get('api_token_configured') and 'smoke-fake-token' not in fw_body and 'api_token_enc' not in fw_body and duplicate_status==409 and second_status==200
+        passed+=log('Firewall sources: VDOM isolation, encrypted key redaction and dedup (no network)',ok)
+        failed+=int(not ok)
+        static_status,provider_body,_=req('GET','/static/js/dhcp_provider.js',cookie=admin_cookie)
+        ok=static_status==200 and 'fortinet' in provider_body and 'paloalto' in provider_body
+        passed+=log('DHCP provider selector is bundled',ok)
+        failed+=int(not ok)
+
+        duplicate_csv = {'csv':'subnet,mask,remarks\n198.18.250.0,255.255.255.0,keep\n198.18.250.0/24,,do-not-overwrite'}
+        st1, body1, _ = req('POST', '/api/ip-inventory/import', duplicate_csv, cookie=admin_cookie)
+        st2, body2, _ = req('POST', '/api/ip-inventory/import', duplicate_csv, cookie=admin_cookie)
+        ok = st1 == st2 == 200 and json.loads(body1).get('created') == 1 and json.loads(body1).get('skipped') == 1 and json.loads(body2).get('created') == 0 and json.loads(body2).get('skipped') == 2
+        passed += log('CSV repeated import is idempotent in frozen build', ok)
+        failed += int(not ok)
+        st, rack_body, _ = req('GET', '/static/js/rack_view.js', cookie=admin_cookie)
+        ok = st == 200 and 'data-rack-u' in rack_body and 'grid-template-columns' in rack_body
+        passed += log('Shared aligned rack renderer is bundled', ok)
+        failed += int(not ok)
+
+        for endpoint in ('devices', 'vms'):
+            st, _, _ = req("POST", f"/api/{endpoint}/batch-delete", {"ids": []}, cookie=admin_cookie)
+            ok = st == 422
+            passed += log(f"{endpoint} rejects empty bulk deletion", ok)
+            failed += int(not ok)
 
         st, _, _ = req("GET", "/", cookie=admin_cookie)
         passed += log("GET / with admin cookie -> 200", st == 200, f"code={st}")

@@ -1,0 +1,10 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const ctx=vm.createContext({escapeHtml:v=>String(v||'').replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;')});
+vm.runInContext(fs.readFileSync('app/static/js/dhcp_auth.js','utf8'),ctx);
+const html=ctx.dhcpAuthFields({auth_mode:'manual',username:'DOMAIN\\<reader>',password_configured:true,password:'never-render',password_enc:'never-render-cipher'});
+assert.match(html,/value="manual" selected/);assert.match(html,/&lt;reader>/);assert.match(html,/留空保留/);
+assert.ok(!html.includes('never-render'));
+const values={'[data-dhcp-auth]':'manual','[data-dhcp-user]':' DOMAIN\\reader ','[data-dhcp-password]':'  keep whitespace  '};
+const payload=ctx.dhcpAuthPayload({querySelector:selector=>({value:values[selector]})});
+assert.equal(payload.username,'DOMAIN\\reader');assert.equal(payload.password,'  keep whitespace  ');
+console.log('PASS: manual DHCP identity, no password autofill, username escaping, password whitespace preservation');

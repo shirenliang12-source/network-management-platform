@@ -3,6 +3,7 @@
 <div class="page-header">
     <h1>🟢 虚拟机清单</h1>
     <div>
+        <button class="btn btn-danger" onclick="deleteSelectedVms()">删除选中虚拟机</button>
         <button class="btn btn-outline" onclick="downloadVmTemplate()">⬇ 下载模板</button>
         <button class="btn btn-outline" onclick="showImportVmModal()">⬆ 导入</button>
         <button class="btn btn-outline" onclick="exportVms()">⬇ 导出</button>
@@ -64,6 +65,7 @@
             <table class="data-table">
                 <thead>
                     <tr>
+                        <th><input type="checkbox" id="selectAllVms" title="全选当前筛选结果" onchange="document.querySelectorAll('.vm-checkbox').forEach(c => c.checked = this.checked)"></th>
                         <th>服务器名称</th>
                         <th>功能 / 用途</th>
                         <th>操作系统</th>
@@ -86,6 +88,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/js/asset_relations.js?v={{APP_VERSION}}"></script>
 <script>
 const VM_OS_TYPES = ["Windows", "Linux", "其他"];
 const VM_STATUSES = ["运行中", "已关机", "挂起", "模板", "其他"];
@@ -98,6 +101,7 @@ const VM_SYNC_LOCK_OPTIONS = [
 const OS_ICON = { 'Windows':'🪟', 'Linux':'🐧', '其他':'💻' };
 
 let HOSTS = [];   // 服务器存储列表（宿主机候选）
+let vmLoadSequence = 0;
 
 function vmStatusBadge(s) {
     const map = {
@@ -133,6 +137,7 @@ async function loadSummary() {
 }
 
 async function loadVms() {
+    const sequence = ++vmLoadSequence;
     try {
         const params = new URLSearchParams();
         const host = document.getElementById('filterHost').value;
@@ -144,6 +149,8 @@ async function loadVms() {
         if (status) params.set('status', status);
         if (search) params.set('search', search);
         const items = await API.get('/api/vms?' + params.toString());
+        if (sequence !== vmLoadSequence) return;
+        document.getElementById('selectAllVms').checked = false;
         const body = document.getElementById('vmBody');
         if (items.length === 0) {
             body.innerHTML = '<tr><td colspan="10" class="empty-state">🟢 暂无虚拟机，点击右上角「新增虚拟机」录入</td></tr>';
@@ -151,6 +158,7 @@ async function loadVms() {
         }
         body.innerHTML = items.map(v => `
             <tr>
+                <td><input type="checkbox" class="vm-checkbox" value="${v.id}"></td>
                 <td><strong>${escapeHtml(v.name)}</strong>${vmSyncBadge(v)}${v.last_synced_at ? `<br><small style="color:#888;">同步 ${formatDateTime(v.last_synced_at)}</small>` : ''}</td>
                 <td>${escapeHtml(v.function || '-')}</td>
                 <td>${(OS_ICON[v.os_type]||'💻')} ${escapeHtml(v.os_type||'-')}${v.os_version ? '<br><span style="color:#888;font-size:12px;">'+escapeHtml(v.os_version)+'</span>' : ''}</td>
@@ -162,6 +170,7 @@ async function loadVms() {
                 <td>${vmStatusBadge(v.status)}</td>
                 <td>
                     <button class="btn btn-sm btn-outline" onclick="editVm(${v.id})">编辑</button>
+                    <button class="btn btn-sm btn-outline" onclick="showAssetRelations('vm',${v.id})">IP / 硬件反查</button>
                     ${['stale','stale_confirmed'].includes(v.sync_state) ? `<button class="btn btn-sm btn-warning" onclick="manageStaleVm(${v.id},'confirm')">确认失联</button><button class="btn btn-sm btn-outline" onclick="manageStaleVm(${v.id},'detach')">转为手工</button>` : ''}
                     <button class="btn btn-sm btn-danger" onclick="deleteVm(${v.id})">删除</button>
                 </td>
@@ -177,6 +186,18 @@ function vmSyncBadge(v) {
     if (v.sync_state === 'stale') return `<br>${source} <span class="badge badge-warning">待确认失联</span>`;
     if (v.sync_state === 'stale_confirmed') return `<br>${source} <span class="badge badge-danger">已确认失联</span>`;
     return `<br>${source} <span class="badge badge-success">同步正常</span>`;
+}
+
+async function deleteSelectedVms() {
+    const ids = Array.from(document.querySelectorAll('.vm-checkbox:checked')).map(c => Number(c.value));
+    if (!ids.length) return showToast('请先选择虚拟机（表头可全选当前筛选结果）', 'warning');
+    if (!confirm(`确定删除选中的 ${ids.length} 条虚拟机清单记录？不会删除 vCenter 上的真实虚拟机。外部资产下次同步可能重新导入。请先备份，删除不可撤销。`)) return;
+    try {
+        const result = await API.post('/api/vms/batch-delete', {ids});
+        showToast(`已删除 ${result.deleted} 条记录`, 'success');
+        loadVms();
+        loadSummary();
+    } catch (e) { showToast(e.message, 'error'); }
 }
 
 async function manageStaleVm(id, action) {
@@ -515,6 +536,7 @@ async function submitImportVm() {
             if (data.errors.length > 10) msg += '<br>…';
         }
         resultEl.innerHTML = msg;
+        showImportDuplicates(data);
         showToast(`导入 ${data.imported} 条`, 'success');
         loadVms(); loadSummary(); loadHosts();
     } catch (e) {

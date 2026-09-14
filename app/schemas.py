@@ -278,6 +278,7 @@ class ScheduleConfigResponse(BaseModel):
 
 # ---- IP Inventory ----
 class IPIInventoryCreate(RequestModel):
+    model_config = ConfigDict(str_max_length=65536)
     ip_segment: str = ""
     subnet: str = ""
     mask: str = ""
@@ -293,6 +294,7 @@ class IPIInventoryCreate(RequestModel):
     zone_interface_name: str = ""
 
 class IPIInventoryUpdate(RequestModel):
+    model_config = ConfigDict(str_max_length=65536)
     ip_segment: Optional[str] = None
     subnet: Optional[str] = None
     mask: Optional[str] = None
@@ -308,6 +310,7 @@ class IPIInventoryUpdate(RequestModel):
     zone_interface_name: Optional[str] = None
 
 class IPIInventoryResponse(BaseModel):
+    dhcp: dict = {}
     id: int
     ip_segment: str = ""
     subnet: str = ""
@@ -383,6 +386,7 @@ class IPAMPrefixUpdate(RequestModel):
     is_pool: Optional[bool] = None
 
 class IPAMPrefixResponse(BaseModel):
+    dhcp: dict = {}
     id: int
     aggregate_id: Optional[int] = None
     parent_id: Optional[int] = None
@@ -435,6 +439,8 @@ class IPAMIPAddressUpdate(RequestModel):
     device_ip: Optional[str] = None      # 手工录入：设备 IP
 
 class IPAMIPAddressResponse(BaseModel):
+    assigned_vm_id: Optional[int] = None
+    assigned_vm_name: str = ''
     id: int
     prefix_id: int
     address: str

@@ -141,6 +141,23 @@ def _display(value: Any) -> Any:
     return value
 
 
+def filter_sync_inventory(inventory: dict[str, Any]) -> dict[str, Any]:
+    """Exclude known templates/off VMs without treating them as missing."""
+    excluded = set(inventory.get("excluded_vm_ids", []))
+    eligible = []
+    for item in inventory.get("vms", []):
+        if item.get("status") in {"模板", "已关机"}:
+            if item.get("external_id"):
+                excluded.add(str(item["external_id"]))
+        else:
+            eligible.append(item)
+    inventory["vms"] = eligible
+    inventory["excluded_vm_ids"] = sorted(excluded)
+    inventory["excluded_vm_count"] = len(excluded)
+    inventory.setdefault("summary", {})["vms"] = len(eligible)
+    return inventory
+
+
 def preview_inventory(
     db: Session,
     source: str,
@@ -149,13 +166,22 @@ def preview_inventory(
     detect_missing: bool = False,
 ) -> dict[str, Any]:
     """Annotate an inventory with deterministic create/update/stale diffs."""
+    filter_sync_inventory(inventory)
     existing = {
         str(vm.external_id): vm
         for vm in db.query(VMInstance).filter(
             VMInstance.source_type == source, VMInstance.external_id.is_not(None)
         ).all()
     }
-    seen: set[str] = set()
+    seen: set[str] = set(inventory.get("excluded_vm_ids", []))
+    from app.services.csv_inventory_import import normalized, stored_address
+    local_names, local_ips = {}, {}
+    for local in db.query(VMInstance).all():
+        local_names.setdefault(normalized(local.name), set()).add(local.id)
+        for ip in [local.management_ip] + [p.ip_address for p in local.additional_ips]:
+            if ip:
+                local_ips.setdefault(stored_address(ip), set()).add(local.id)
+    incoming_names, incoming_ips = {}, {}
     summary = {"new": 0, "update": 0, "unchanged": 0, "error": 0, "stale": 0,
                "storage_new": 0, "storage_update": 0, "storage_unchanged": 0, "storage_stale": 0}
     for item in inventory.get("vms", []):
@@ -163,6 +189,20 @@ def preview_inventory(
         if external_id:
             seen.add(external_id)
         vm = existing.get(external_id)
+        name_key = normalized(item.get('name'))
+        ip_keys = {stored_address(ip) for ip in [item.get('management_ip')] + (item.get('additional_ips') or []) if ip}
+        if vm is None:
+            collision_ids = set(local_names.get(name_key, set())) if name_key else set()
+            for ip in ip_keys:
+                collision_ids.update(local_ips.get(ip, set()))
+            duplicate_source = (name_key and name_key in incoming_names) or any(ip in incoming_ips for ip in ip_keys)
+            if collision_ids or duplicate_source:
+                item['error'] = '名称/IP 与已有记录或本次其他对象冲突；请先确认身份，不自动合并或新增'
+                item['conflict_ids'] = sorted(collision_ids)
+        if name_key:
+            incoming_names[name_key] = external_id
+        for ip in ip_keys:
+            incoming_ips[ip] = external_id
         item["imported"] = vm is not None
         item["local_id"] = vm.id if vm else None
         if item.get("error") or not external_id:
@@ -294,6 +334,12 @@ def _apply_core(
     safe_mark_missing = mark_missing and not bool(inventory.get("truncated"))
     preview_inventory(db, source, inventory, detect_missing=safe_mark_missing)
     endpoint = source_endpoint(source, config)
+    # Until multi-source migration exists, never move an external identity
+    # silently to another endpoint merely because the configured host changed.
+    for model in (VMInstance, IntegrationStorage):
+        for row in db.query(model).filter(model.source_type == source).all():
+            if row.source_endpoint and row.source_endpoint.strip().casefold() != endpoint.strip().casefold():
+                raise ValueError('当前来源已绑定其他服务器；请先核对来源身份，禁止覆盖原有同步关联')
     now = datetime.utcnow()
     host_map = {
         (row.name or "").strip().casefold(): row
@@ -329,12 +375,14 @@ def _apply_core(
 
     created = updated = unchanged = skipped = 0
     imported_ids: dict[str, int] = {}
-    seen_vm_ids: set[str] = set()
+    seen_vm_ids: set[str] = set(inventory.get("excluded_vm_ids", []))
     for item in inventory.get("vms", []):
         external_id = str(item.get("external_id") or "")[:255]
         if external_id:
             seen_vm_ids.add(external_id)
         if not external_id or item.get("error"):
+            if selected_ids is None or external_id in selected_ids:
+                skipped += 1
             continue
         if selected_ids is not None and external_id not in selected_ids:
             continue
@@ -418,6 +466,7 @@ def _apply_core(
     run.unchanged_count = unchanged
     run.stale_count = stale
     run.diff_summary = inventory.get("diff_summary", {})
+    run.diff_summary["excluded_vms"] = inventory.get("excluded_vm_count", 0)
     if mark_missing and not safe_mark_missing:
         run.diff_summary = dict(run.diff_summary or {})
         run.diff_summary["stale_skipped_reason"] = "inventory_truncated"
@@ -434,7 +483,10 @@ def _apply_core(
         "ok": True, "run_id": run.id, "created": created, "updated": updated,
         "unchanged": unchanged, "skipped": skipped, "stale": stale,
         "imported_ids": imported_ids,
-        "message": f"同步完成：新增 {created}，更新 {updated}，未变化 {unchanged}，失联 {stale}",
+        "excluded": inventory.get("excluded_vm_count", 0),
+        "conflicts": [{"external_id":item.get('external_id'), "existing_ids":item.get('conflict_ids',[]), "reason":item.get('error')}
+                      for item in inventory.get('vms',[]) if item.get('error') and (selected_ids is None or str(item.get('external_id')) in selected_ids)],
+        "message": f"同步完成：新增 {created}，更新 {updated}，未变化 {unchanged}，跳过/冲突 {skipped}，失联 {stale}，排除模板/关机 {inventory.get('excluded_vm_count', 0)}",
     }
 
 

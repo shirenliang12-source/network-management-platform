@@ -6,7 +6,10 @@ groups (the tabs on the command config page) can be added, renamed,
 and deleted via the UI without touching commands.json directly.
 """
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
+from app.database import get_db
+from app.models import Device, CredentialProfile
 from typing import Optional
 
 from app.api_models import AllCommandsUpdateRequest, CommandsUpdateRequest, StrictRequest
@@ -32,6 +35,28 @@ class DeviceTypeCreate(StrictRequest):
 class DeviceTypeLabelUpdate(StrictRequest):
     """Rename a device type's display label."""
     label: str
+
+
+class DeviceTypeDriverUpdate(StrictRequest):
+    driver: str
+
+
+@router.get("/types/drivers")
+def list_type_drivers():
+    from netmiko.ssh_dispatcher import CLASS_MAPPER
+    from app.services.command_config import resolve_device_driver
+    return {"drivers": sorted(key for key in CLASS_MAPPER if "telnet" not in key),
+            "mapping": {t["key"]: resolve_device_driver(t["key"]) for t in list_device_types()}}
+
+
+@router.put("/types/{device_type}/driver")
+def update_type_driver(device_type: str, body: DeviceTypeDriverUpdate):
+    from app.services.command_config import set_device_driver
+    try:
+        set_device_driver(device_type, body.driver)
+        return {"driver": body.driver}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.get("")
@@ -73,7 +98,9 @@ def create_device_type(body: DeviceTypeCreate):
             if base:
                 import json as _json
                 initial = _json.loads(_json.dumps(base))  # deep copy
-        result = add_device_type(body.label, initial)
+        if body.base_on and body.base_on not in load_commands():
+            raise ValueError("继承的设备类型不存在")
+        result = add_device_type(body.label, initial, body.base_on or "cisco_ios")
         return {
             "message": f"已创建设备类型「{result['label']}」",
             **result,
@@ -87,7 +114,7 @@ def create_device_type(body: DeviceTypeCreate):
 
 
 @router.delete("/types/{device_type}")
-def remove_device_type(device_type: str):
+def remove_device_type(device_type: str, db: Session = Depends(get_db)):
     """Delete a custom device-type group (built-ins cannot be removed).
 
     Returns the number of devices currently using the type so the UI
@@ -95,6 +122,8 @@ def remove_device_type(device_type: str):
     fall back to cisco_ios at collection time).
     """
     try:
+        if db.query(Device).filter_by(device_type=device_type).first() or db.query(CredentialProfile).filter_by(device_type=device_type).first():
+            raise ValueError("该类型仍被设备或凭据模板使用，请先修改这些记录的类型，再删除")
         result = delete_device_type(device_type)
         return {
             "message": f"已删除设备类型「{device_type}」",

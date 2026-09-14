@@ -23,22 +23,6 @@ import urllib.request
 import hashlib
 import zipfile
 
-# Neutralize the WorkBuddy safe-delete shim when present. Normal Python build
-# environments do not provide sitecustomize, so this must remain optional.
-try:
-    import sitecustomize
-except ImportError:
-    sitecustomize = None
-
-if sitecustomize is not None:
-    if hasattr(sitecustomize, "_orig_remove"):
-        os.remove = sitecustomize._orig_remove
-        os.unlink = sitecustomize._orig_unlink
-    if hasattr(sitecustomize, "_orig_rmdir"):
-        os.rmdir = sitecustomize._orig_rmdir
-    if hasattr(sitecustomize, "_orig_shutil_rmtree"):
-        shutil.rmtree = sitecustomize._orig_shutil_rmtree
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SEVENZIP = r"C:\Program Files\7-Zip\7z.exe"
 SFX = r"C:\Program Files\7-Zip\7z.sfx"

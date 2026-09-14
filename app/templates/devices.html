@@ -3,6 +3,8 @@
 <div class="page-header">
     <h1>设备管理</h1>
     <div>
+        <button class="btn btn-outline" onclick="manageCompanies()">维护公司</button>
+        <a class="btn btn-outline" href="/settings">维护设备类型 / 命令</a>
         <button class="btn btn-outline" onclick="exportCSV()">📥 导出CSV</button>
         <button class="btn btn-secondary" onclick="showImportModal()">📤 导入CSV</button>
         <button class="btn btn-primary" onclick="showAddModal()">➕ 添加设备</button>
@@ -10,7 +12,9 @@
 </div>
 
 <div class="search-bar">
-    <input type="text" class="form-control" id="searchInput" placeholder="搜索设备名称、IP或公司..." oninput="loadDevices()">
+    <input type="text" class="form-control" id="searchInput" placeholder="名称 / 主IP及附加IP / 型号 / 用途 / 公司" oninput="loadDevices()">
+    <select class="form-control" id="typeFilter" onchange="loadDevices()"><option value="">全部连接类型</option></select>
+    <button class="btn btn-outline" onclick="resetDeviceFilters()">清空筛选</button>
     <select class="form-control" id="companyFilter" style="width: 140px;" onchange="loadDevices()">
         <option value="">全部公司</option>
     </select>
@@ -52,6 +56,8 @@
             </table>
         </div>
         <div style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+            <button class="btn btn-sm btn-danger" onclick="deleteSelectedDevices()">删除选中设备</button>
+            <small id="deviceSelectionCount">全选仅包含当前筛选结果</small>
             <button class="btn btn-sm btn-success" onclick="batchBackup()">💾 批量备份</button>
             <button class="btn btn-sm btn-primary" onclick="batchDiscover()">🔍 批量发现</button>
             <button class="btn btn-sm btn-info" onclick="batchConnect()">⚡ 一键连接</button>
@@ -66,10 +72,13 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/js/device_inventory.js?v={{APP_VERSION}}"></script>
 <script>
 let devices = [];
+let deviceLoadSequence = 0;
 
 function deviceTypeText(t) {
+    if (inventoryTypeLabels[t]) return inventoryTypeLabels[t];
     const map = {
         'cisco_ios': 'Cisco IOS',
         'cisco_ios_xe': 'Cisco IOS-XE',
@@ -116,6 +125,8 @@ async function loadCompanies() {
     try {
         const companies = await API.get('/api/devices/companies');
         const select = document.getElementById('companyFilter');
+        const previous = select.value;
+        select.innerHTML = '<option value="">全部公司</option>';
         companies.forEach(c => {
             if (!c.company) return; // skip empty
             const opt = document.createElement('option');
@@ -123,6 +134,7 @@ async function loadCompanies() {
             opt.textContent = `${c.company} (${c.device_count})`;
             select.appendChild(opt);
         });
+        select.value = previous;
     } catch (e) { console.error(e); }
 }
 
@@ -161,6 +173,7 @@ function collectExtraIps(prefix) {
 }
 
 async function loadDevices() {
+    const sequence = ++deviceLoadSequence;
     const search = document.getElementById('searchInput').value;
     const company = document.getElementById('companyFilter').value;
     const groupId = document.getElementById('groupFilter').value;
@@ -171,9 +184,16 @@ async function loadDevices() {
     if (company) url += `company=${encodeURIComponent(company)}&`;
     if (groupId) url += `group_id=${groupId}&`;
     if (status) url += `status=${status}&`;
+    const type = document.getElementById('typeFilter').value;
+    if (type) url += `device_type=${encodeURIComponent(type)}&`;
 
     try {
-        devices = await API.get(url);
+        const result = await API.get(url);
+        if (sequence !== deviceLoadSequence) return;
+        devices = result;
+        document.getElementById('selectAll').checked = false;
+        document.getElementById('selectAll').indeterminate = false;
+        document.getElementById('deviceSelectionCount').textContent = `共 ${devices.length} 台；全选仅包含当前筛选结果`;
         const body = document.getElementById('devicesTableBody');
         if (devices.length > 0) {
             body.innerHTML = devices.map(d => `
@@ -181,7 +201,7 @@ async function loadDevices() {
                     <td><input type="checkbox" class="device-checkbox" value="${d.id}"></td>
                     <td><a href="/devices/${d.id}" style="text-decoration: none; font-weight: 500;">${escapeHtml(d.name)}</a></td>
                     <td>${renderDeviceIps(d)}</td>
-                    <td>${deviceTypeLabel(d.device_type)}</td>
+                    <td>${escapeHtml(deviceTypeText(d.device_type))}</td>
                     <td>${d.company ? `<span class="badge badge-secondary">${escapeHtml(d.company)}</span>` : '<span style="color:#999;">-</span>'}</td>
                     <td>${d.model ? escapeHtml(d.model) : '<span style="color:#999;">-</span>'}</td>
                     <td>${d.function ? `<span class="badge badge-secondary">${escapeHtml(d.function)}</span>` : '<span style="color:#999;">-</span>'}</td>
@@ -191,6 +211,7 @@ async function loadDevices() {
                     <td>${formatRelative(d.last_backup)}</td>
                     <td>${formatRelative(d.last_discovery)}</td>
                     <td>
+                        <button class="btn btn-sm btn-outline" onclick="showDeviceNeighbors(${d.id})">CDP / LLDP 邻居</button>
                         <button class="btn btn-sm btn-outline" onclick="testConnection(${d.id})" title="测试连接">🔌</button>
                         <button class="btn btn-sm btn-outline" onclick="editDevice(${d.id})" title="编辑">✏️</button>
                         <button class="btn btn-sm btn-danger" onclick="deleteDevice(${d.id})" title="删除">🗑️</button>
@@ -312,6 +333,7 @@ function showAddModal() {
     document.getElementById('modalContainer').innerHTML = modal;
     loadNICs('add-source-ip');
     populateGroupSelect('add-group');
+    populateDeviceCatalogs('add', 'cisco_ios', '');
 }
 
 async function submitAddDevice() {
@@ -390,6 +412,7 @@ async function editDevice(id) {
                         <div class="form-group"><label>新密码 (留空不修改)</label><input type="password" class="form-control" id="edit-password" placeholder="••••••"></div>
                         <div class="form-group"><label>新Enable密码 (留空不修改)</label><input type="password" class="form-control" id="edit-enable-password" placeholder="••••••"></div>
                         <div class="form-group"><label>SSH端口</label><input type="number" class="form-control" id="edit-port" value="${d.port}"></div>
+                        <div class="form-group"><label><input type="checkbox" id="edit-active" ${d.is_active ? 'checked' : ''}> 参与自动 SSH 任务</label><small>电话、未知设备可仅建档；启用前请确认支持 SSH、驱动与账号正确。</small></div>
                         <div class="form-group">
                             <label>出口网卡 (源IP)</label>
                             <select class="form-control" id="edit-source-ip">
@@ -408,6 +431,7 @@ async function editDevice(id) {
         document.getElementById('modalContainer').innerHTML = modal;
         loadNICs('edit-source-ip', d.source_ip);
         populateGroupSelect('edit-group', d.group_id);
+        populateDeviceCatalogs('edit', d.device_type, d.company);
     } catch (e) {
         showToast('加载设备信息失败: ' + e.message, 'error');
     }
@@ -420,6 +444,7 @@ async function submitEditDevice(id) {
         name: document.getElementById('edit-name').value,
         ip_address: document.getElementById('edit-ip').value,
         device_type: document.getElementById('edit-type').value,
+        is_active: document.getElementById('edit-active').checked,
         company: document.getElementById('edit-company').value,
         group_id: document.getElementById('edit-group').value ? parseInt(document.getElementById('edit-group').value) : null,
         model: document.getElementById('edit-model').value,
@@ -490,11 +515,13 @@ async function importCSV() {
     try {
         const res = await fetch('/api/devices/import-csv', { method: 'POST', body: formData });
         const result = await res.json();
+        if (!res.ok) throw new Error(result.detail || '导入失败');
         showToast(result.message, 'success');
         if (result.errors && result.errors.length > 0) {
             console.log('Import errors:', result.errors);
         }
         document.querySelector('.modal-overlay').remove();
+        showImportDuplicates(result);
         loadDevices();
     } catch (e) {
         showToast('导入失败: ' + e.message, 'error');
@@ -719,6 +746,7 @@ async function testConnection(id) {
 loadGroups();
 loadCompanies();
 loadProfileOptions();
+loadDeviceTypeFilter();
 loadDevices();
 </script>
 {% endblock %}

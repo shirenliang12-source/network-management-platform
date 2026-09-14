@@ -4,14 +4,15 @@ import io
 import re
 import logging
 import threading
+import json
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
 
 from app.database import get_db, SessionLocal
-from app.api_models import BatchApplyProfileRequest
+from app.api_models import BatchApplyProfileRequest, InventorySelectionRequest, CompanyCatalogRequest
 from app.models import Device, DeviceGroup, DeviceInfo, CredentialProfile, DeviceIP
 from app.services.device_ip_link import sync_device_auto_links
 from app.schemas import (
@@ -127,9 +128,12 @@ def list_devices(
     company: Optional[str] = None,
     status: Optional[str] = None,
     search: Optional[str] = None,
+    device_type: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     query = db.query(Device)
+    if device_type:
+        query = query.filter(Device.device_type == device_type)
     if group_id:
         query = query.filter(Device.group_id == group_id)
     if company:
@@ -141,6 +145,9 @@ def list_devices(
             (Device.name.ilike(f"%{search}%")) |
             (Device.ip_address.ilike(f"%{search}%")) |
             (Device.company.ilike(f"%{search}%"))
+            | (Device.model.ilike(f"%{search}%"))
+            | (Device.function.ilike(f"%{search}%"))
+            | Device.extra_ips.any(DeviceIP.ip_address.ilike(f"%{search}%"))
         )
     devices = query.order_by(Device.name).all()
 
@@ -159,7 +166,51 @@ def list_companies(db: Session = Depends(get_db)):
     result = []
     for company, count in rows:
         result.append({"company": company or "", "device_count": count})
+    from app.models import SystemSetting
+    row = db.get(SystemSetting, "device_company_catalog")
+    names = json.loads(row.value) if row and row.value else []
+    used = {item["company"] for item in result}
+    result.extend({"company": name, "device_count": 0} for name in names if name not in used)
     return sorted(result, key=lambda x: (x["company"] == "", x["company"]))
+
+
+@router.get("/catalog/types")
+def device_type_options(db: Session = Depends(get_db)):
+    from app.services.command_config import list_device_types
+    rows = list_device_types()
+    known = {row["key"] for row in rows}
+    existing = {value for (value,) in db.query(Device.device_type).distinct() if value}
+    existing.update({"cisco_ios_xe", "cisco_wlc", "cisco_ap"})
+    rows.extend({"key": key, "label": key, "builtin": False} for key in sorted(existing - known))
+    return {"device_types": rows}
+
+
+@router.put("/companies")
+def save_companies(payload: CompanyCatalogRequest, db: Session = Depends(get_db)):
+    from app.models import SystemSetting
+    used = {name for (name,) in db.query(Device.company).distinct() if name}
+    if used - set(payload.names):
+        raise HTTPException(400, "不能删除仍被设备使用的公司，请先调整设备所属公司")
+    row = db.get(SystemSetting, "device_company_catalog")
+    if row is None:
+        row = SystemSetting(key="device_company_catalog")
+        db.add(row)
+    row.value = json.dumps(payload.names, ensure_ascii=False)
+    db.commit()
+    return {"names": payload.names}
+
+
+@router.post("/batch-delete")
+def batch_delete_devices(payload: InventorySelectionRequest, request: Request, db: Session = Depends(get_db)):
+    rows = db.query(Device).filter(Device.id.in_(payload.ids)).all()
+    if len(rows) != len(payload.ids):
+        raise HTTPException(409, "部分设备已不存在，请刷新列表后重新选择；本次未删除")
+    for row in rows:
+        _delete_device_records(db, row)
+    db.commit()
+    request.state.audit_action = "devices.batch_delete"
+    request.state.audit_detail = {"ids": payload.ids, "count": len(rows)}
+    return {"deleted": len(rows)}
 
 
 @router.get("/{device_id}", response_model=DeviceResponse)
@@ -168,6 +219,50 @@ def get_device(device_id: int, db: Session = Depends(get_db)):
     if not d:
         raise HTTPException(status_code=404, detail="Device not found")
     return _to_response(d)
+
+
+@router.get("/{device_id}/neighbors")
+def device_neighbors(device_id: int, db: Session = Depends(get_db)):
+    from app.models import Neighbor
+    from app.services.discovery_service import classify_neighbor
+    if not db.get(Device, device_id):
+        raise HTTPException(404, "设备不存在")
+    result = []
+    for n in db.query(Neighbor).filter_by(device_id=device_id).all():
+        # Resolve the real managed target, including an additional management IP.
+        target = None
+        if n.neighbor_ip:
+            target = db.query(Device).filter(
+                (Device.ip_address == n.neighbor_ip)
+                | Device.extra_ips.any(DeviceIP.ip_address == n.neighbor_ip)
+            ).first()
+        elif n.neighbor_device_id:
+            target = db.get(Device, n.neighbor_device_id)
+        result.append({"id": n.id, "name": n.neighbor_name, "ip": n.neighbor_ip,
+                       "platform": n.neighbor_platform, "protocol": n.protocol,
+                       "local_interface": n.local_interface, "neighbor_interface": n.neighbor_interface,
+                       "category": classify_neighbor(n.neighbor_platform, n.neighbor_capability, n.neighbor_name),
+                       "managed": target is not None, "managed_device_id": target.id if target else None})
+    return result
+
+
+@router.post("/{device_id}/neighbors/discover")
+def discover_one_device(device_id: int, db: Session = Depends(get_db)):
+    from app.services.discovery_service import discover_device_neighbors
+    row = db.get(Device, device_id)
+    if not row:
+        raise HTTPException(404, "设备不存在")
+    return discover_device_neighbors(row, db)
+
+
+@router.post("/{device_id}/neighbors/add")
+def add_selected_neighbors(device_id: int, payload: InventorySelectionRequest, db: Session = Depends(get_db)):
+    from app.models import Neighbor
+    from app.services.discovery_service import auto_add_discovered_neighbors
+    rows = db.query(Neighbor).filter(Neighbor.device_id == device_id, Neighbor.id.in_(payload.ids)).all()
+    if len(rows) != len(payload.ids):
+        raise HTTPException(409, "邻居列表已变化，请刷新后重新选择")
+    return auto_add_discovered_neighbors([device_id], db, neighbor_ids=payload.ids)
 
 
 @router.post("", response_model=DeviceResponse)
@@ -239,6 +334,17 @@ def delete_device(device_id: int, db: Session = Depends(get_db)):
     d = db.query(Device).get(device_id)
     if not d:
         raise HTTPException(status_code=404, detail="Device not found")
+    _delete_device_records(db, d)
+    db.commit()
+    return {"message": "Device deleted"}
+
+
+def _delete_device_records(db: Session, d: Device):
+    device_id = d.id
+    from app.models import SystemSetting
+    retention = db.get(SystemSetting, f'backup_retention:{device_id}')
+    if retention:
+        db.delete(retention)
     # Remove auto-created IPAM / IP inventory records tied to this device
     from app.models import IPAMIPAddress, IPInventory
     db.query(IPAMIPAddress).filter(
@@ -249,9 +355,12 @@ def delete_device(device_id: int, db: Session = Depends(get_db)):
         IPInventory.device_id == device_id,
         IPInventory.usage.like("设备额外IP(自动建档)%"),
     ).delete(synchronize_session=False)
+    # Preserve manually maintained assets/logs, but unlink their nullable FKs.
+    for table in Device.metadata.tables.values():
+        for column in table.columns:
+            if column.nullable and any(fk.target_fullname == "devices.id" for fk in column.foreign_keys):
+                db.execute(table.update().where(column == device_id).values({column.name: None}))
     db.delete(d)
-    db.commit()
-    return {"message": "Device deleted"}
 
 
 @router.post("/batch", response_model=List[DeviceResponse])
@@ -285,85 +394,13 @@ def batch_create_devices(batch: DeviceBatchImport, db: Session = Depends(get_db)
 
 @router.post("/import-csv")
 async def import_devices_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Import devices from CSV file.
-    CSV format: name, ip_address, device_type, username, password, enable_password, port, group_name, company, model, function
-    多网卡/多 IP：可用 ip2, ip3, ... ip10 列填写额外 IP（首个 IP 仍用 ip_address 作主管理 IP）。
-    """
-    content = await file.read()
-    text = content.decode("utf-8-sig")
-    reader = csv.DictReader(io.StringIO(text))
-
-    imported = 0
-    skipped = 0
-    errors = []
-    imported_devices = []
-
-    for row_num, row in enumerate(reader, start=2):
-        try:
-            ip = row.get("ip_address", "").strip()
-            name = row.get("name", "").strip()
-            if not ip or not name:
-                errors.append(f"Row {row_num}: Missing name or IP")
-                continue
-
-            # Collect extra IPs from ip2, ip3, ... columns (multi-NIC import)
-            extra_by_idx = {}
-            for key in row.keys():
-                m = re.match(r"^ip(\d+)$", (key or "").strip(), re.IGNORECASE)
-                if m and int(m.group(1)) >= 2:
-                    val = (row.get(key) or "").strip()
-                    if val:
-                        extra_by_idx[int(m.group(1))] = val
-            extras = [extra_by_idx[n] for n in sorted(extra_by_idx)]
-
-            existing = db.query(Device).filter(Device.ip_address == ip).first()
-            if existing:
-                skipped += 1
-                continue
-
-            group_name = row.get("group_name", "").strip()
-            group_id = None
-            if group_name:
-                group = db.query(DeviceGroup).filter(DeviceGroup.name == group_name).first()
-                if not group:
-                    group = DeviceGroup(name=group_name, description="")
-                    db.add(group)
-                    db.flush()
-                group_id = group.id
-
-            d = Device(
-                name=name,
-                ip_address=ip,
-                device_type=row.get("device_type", "cisco_ios").strip() or "cisco_ios",
-                group_id=group_id,
-                company=row.get("company", "").strip(),
-                model=row.get("model", "").strip(),
-                function=row.get("function", "").strip(),
-                username=row.get("username", "admin").strip() or "admin",
-                port=int(row.get("port", "22") or 22),
-                is_active=True,
-            )
-            d.set_password(row.get("password", "").strip())
-            d.set_enable_password(row.get("enable_password", "").strip())
-            db.add(d)
-            db.flush()
-            _set_device_ips(db, d, extras)
-            imported_devices.append(d)
-            imported += 1
-        except Exception as e:
-            errors.append(f"Row {row_num}: {str(e)}")
-
-    db.commit()
-    for d in imported_devices:
-        db.refresh(d)
-        sync_device_auto_links(db, d)
-
-    return {
-        "imported": imported,
-        "skipped": skipped,
-        "errors": errors,
-        "message": f"Imported {imported} devices, skipped {skipped} duplicates",
-    }
+    from app.services.csv_inventory_import import run_import
+    content = await file.read(10_000_001)
+    try:
+        raw = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "请使用 UTF-8 CSV") from None
+    return run_import(db, "devices", raw)
 
 
 @router.get("/export/csv")

@@ -110,6 +110,9 @@ def collect_device_info(device: Device, db: Session) -> dict:
 
         # Parse version info
         version_info = parse_version(version_output)
+        from app.services.firewall_parser import parse_firewall_version
+        from app.services.command_config import resolve_device_driver
+        version_info.update(parse_firewall_version(version_output, resolve_device_driver(device.device_type)))
 
         # Parse inventory
         inventory_items = parse_inventory(inventory_output)

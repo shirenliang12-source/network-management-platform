@@ -1,6 +1,6 @@
 """数据中心 (Data Center) API routes — NetBox 风格：站点 (Site) -> 机柜 (Rack)。"""
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -18,6 +18,18 @@ from app.schemas import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/dc", tags=["datacenter"])
+
+
+@router.get('/racks/{rack_id}/relations')
+def rack_relations(rack_id: int, request: Request, db: Session = Depends(get_db)):
+    from app.services.asset_relations import relations, request_modules
+    return relations(db, 'rack', rack_id, request_modules(request))
+
+
+@router.get('/sites/{site_id}/relations')
+def site_relations(site_id: int, request: Request, db: Session = Depends(get_db)):
+    from app.services.asset_relations import relations, request_modules
+    return relations(db, 'site', site_id, request_modules(request))
 
 # 机柜状态 / 类型 / 宽度 / 角色 选项（与 UI 下拉保持一致）
 DC_RACK_STATUSES = ["在用", "规划中", "预留", "停用"]
@@ -91,6 +103,8 @@ def update_site(site_id: int, payload: DCSiteUpdate, db: Session = Depends(get_d
 
 @router.delete("/sites/{site_id}")
 def delete_site(site_id: int, db: Session = Depends(get_db)):
+    if db.query(DCRack).filter_by(site_id=site_id).first():
+        raise HTTPException(409, '站点仍有机柜，请先迁移或删除机柜')
     site = db.query(DCSite).get(site_id)
     if not site:
         raise HTTPException(status_code=404, detail="站点不存在")
@@ -215,6 +229,9 @@ def update_rack(rack_id: int, payload: DCRackUpdate, db: Session = Depends(get_d
 
 @router.delete("/racks/{rack_id}")
 def delete_rack(rack_id: int, db: Session = Depends(get_db)):
+    from app.models import ITAsset, ServerAsset
+    if db.query(ITAsset).filter_by(rack_id=rack_id).first() or db.query(ServerAsset).filter_by(rack_id=rack_id).first():
+        raise HTTPException(409, '机柜仍有关联资产，请先迁移或删除资产')
     rack = db.query(DCRack).get(rack_id)
     if not rack:
         raise HTTPException(status_code=404, detail="机柜不存在")

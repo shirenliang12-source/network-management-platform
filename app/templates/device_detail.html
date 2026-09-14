@@ -73,8 +73,9 @@
 
     <!-- Neighbors -->
     <div class="card">
-        <div class="card-header">邻居设备</div>
+        <div class="card-header">邻居设备 <button class="btn btn-sm btn-primary" onclick="showDeviceNeighbors(Number(deviceId))">选择添加邻居</button></div>
         <div class="card-body">
+            <p>先发现本台邻居，再手动添加需要管理的设备；添加后点击“进入设备继续发现”，可逐台向下探索。新设备继承匹配的凭据模板或本台账号，连接前请确认驱动和账号适用。</p>
             <div class="table-container">
                 <table class="data-table">
                     <thead>
@@ -84,6 +85,7 @@
                             <th>本地接口</th>
                             <th>邻居接口</th>
                             <th>协议</th>
+                            <th>操作</th>
                         </tr>
                     </thead>
                     <tbody id="neighborsTable">
@@ -155,6 +157,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/js/device_inventory.js?v={{APP_VERSION}}"></script>
 <script>
 const deviceId = document.getElementById('deviceId').value;
 
@@ -263,24 +266,37 @@ async function editProductionDate() {
 
 async function loadNeighbors() {
     try {
-        const neighbors = await API.get(`/api/topology/neighbors?device_id=${deviceId}`);
+        const neighbors = await API.get(`/api/devices/${deviceId}/neighbors`);
         const body = document.getElementById('neighborsTable');
         if (neighbors && neighbors.length > 0) {
             body.innerHTML = neighbors.map(n => `
                 <tr>
-                    <td>${escapeHtml(n.neighbor_name || '-')}</td>
-                    <td>${escapeHtml(n.neighbor_ip || '-')}</td>
+                    <td>${escapeHtml(n.name || '-')}<br><small>${escapeHtml(n.category)}</small></td>
+                    <td>${escapeHtml(n.ip || '-')}</td>
                     <td>${escapeHtml(n.local_interface || '-')}</td>
                     <td>${escapeHtml(n.neighbor_interface || '-')}</td>
                     <td><span class="badge badge-info">${escapeHtml((n.protocol || '').toUpperCase())}</span></td>
+                    <td>${n.managed_device_id ? `<a class="btn btn-sm btn-outline" href="/devices/${n.managed_device_id}">进入设备继续发现</a>` : n.ip ? `<button class="btn btn-sm btn-primary" onclick="addDetailNeighbor(${n.id},this)">添加此设备</button>` : '缺少管理 IP，无法添加'}</td>
                 </tr>
             `).join('');
         } else {
-            body.innerHTML = '<tr><td colspan="5" class="empty-state">暂无邻居数据，请执行邻居发现</td></tr>';
+            body.innerHTML = '<tr><td colspan="6" class="empty-state">暂无邻居数据，请执行邻居发现</td></tr>';
         }
     } catch (e) {
-        console.error(e);
+        showToast('加载邻居失败：' + e.message, 'error');
     }
+}
+
+async function addDetailNeighbor(neighborId, button) {
+    if (!confirm('将此邻居加入设备管理？只添加本台邻居，不递归发现其他设备。')) return;
+    button.disabled = true;
+    try {
+        const result = await API.post(`/api/devices/${deviceId}/neighbors/add`, {ids: [neighborId]});
+        if (result.errors.length) throw new Error(result.errors.join('；'));
+        showToast(result.added_count ? '已添加，点击“进入设备继续发现”可继续' : '设备已存在，可直接进入继续发现', 'success');
+        await loadNeighbors();
+    } catch (e) { showToast('添加失败：' + e.message, 'error'); }
+    finally { button.disabled = false; }
 }
 
 async function loadBackupHistory() {
@@ -367,8 +383,9 @@ async function backupDevice() {
 async function discoverDevice() {
     showLoading();
     try {
-        const result = await API.post('/api/topology/discover', [parseInt(deviceId)]);
-        showToast(`发现${result.success_count > 0 ? '成功' : '失败'}`, result.success_count > 0 ? 'success' : 'error');
+        const result = await API.post(`/api/devices/${deviceId}/neighbors/discover`);
+        if (!result.success) throw new Error(result.error || '发现失败');
+        showToast('发现完成，请在邻居列表手动添加设备', 'success');
         loadDeviceInfo();
         loadNeighbors();
     } catch (e) {

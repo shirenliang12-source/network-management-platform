@@ -265,7 +265,7 @@ class UpgradePersistenceTests(unittest.TestCase):
                     profile = db.query(CredentialProfile).filter_by(name="upgrade-profile").one()
                     assert profile.get_password() == "credential-survives-upgrade"
                     revision = db.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                    assert revision == "20260908_0005"
+                    assert revision == "20260910_0006"
                 commands = load_commands()
                 assert commands["custom_platform"]["probe"]["command"] == " show version "
                 print((Path(DATA_DIR) / ".secret_key").read_text(encoding="utf-8").strip())
@@ -286,7 +286,7 @@ class UpgradePersistenceTests(unittest.TestCase):
                 (Path(data_dir) / "backups" / "upgrade_status.json").read_text(encoding="utf-8")
             )
             self.assertEqual(status["status"], "success")
-            self.assertEqual(status["revision_after"], "20260908_0005")
+            self.assertEqual(status["revision_after"], "20260910_0006")
             self.assertTrue(Path(status["backup_path"]).is_file())
 
     def test_installers_do_not_overwrite_or_delete_persistent_configuration(self):
@@ -338,6 +338,9 @@ class UpgradePersistenceTests(unittest.TestCase):
                 connection.execute(
                     "INSERT INTO vm_instances (id,name) VALUES (1,'legacy-vm')"
                 )
+                connection.execute("INSERT INTO ipam_prefixes (id,prefix) VALUES (1,'192.0.2.0/24')")
+                connection.execute("INSERT INTO ipam_ip_addresses (id,prefix_id,address,status,allocation_type,assigned_device_id,description) VALUES (1,1,'192.0.2.10','使用中','静态',1,'preserved-ip')")
+                connection.execute("INSERT INTO system_settings (key,value) VALUES ('existing-config','preserve-me')")
                 connection.commit()
                 connection.close()
 
@@ -354,9 +357,12 @@ class UpgradePersistenceTests(unittest.TestCase):
                     "SELECT name, source_type, external_id FROM vm_instances WHERE id=1"
                 ).fetchone()
                 assert legacy_vm == ('legacy-vm', 'manual', None)
+                assert connection.execute("SELECT address,status,assigned_device_id,assigned_vm_id,description FROM ipam_ip_addresses WHERE id=1").fetchone() == ('192.0.2.10','使用中',1,None,'preserved-ip')
+                assert connection.execute("SELECT value FROM system_settings WHERE key='existing-config'").fetchone()[0] == 'preserve-me'
+                assert connection.execute('PRAGMA foreign_key_check').fetchall() == []
                 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 assert {"integration_storage_assets", "vm_storage_links", "integration_sync_runs"} <= tables
-                assert revision == "20260908_0005"
+                assert revision == "20260910_0006"
                 connection.close()
                 """
             )
@@ -879,7 +885,7 @@ class ApplicationSecurityIntegrationTests(unittest.TestCase):
         from app.database import engine
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        self.assertEqual(revision, "20260908_0005")
+        self.assertEqual(revision, "20260910_0006")
         self.client.post("/api/auth/logout")
         response = self.client.post(
             "/api/auth/login",

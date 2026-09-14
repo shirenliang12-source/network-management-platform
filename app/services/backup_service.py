@@ -124,6 +124,11 @@ def backup_device_config(device: Device, db: Session) -> dict:
         db.commit()
 
         result["success"] = True
+        try:
+            prune_old_backups(db, device.id)
+        except Exception:
+            db.rollback()
+            logger.exception('Backup saved but retention cleanup failed')
         result["is_changed"] = is_changed
         result["change_summary"] = change_summary
         logger.info(f"Backup successful for {device.name} (changed: {is_changed})")
@@ -249,32 +254,44 @@ def backup_multiple_devices(device_ids: list, db: Session) -> TaskLog:
     db.commit()
 
     # Apply retention policy (0 = keep all)
-    prune_old_backups(db)
+    # Retention runs individually after each successful capture above.
 
     return task
 
 
-def prune_old_backups(db: Session):
+def prune_old_backups(db: Session, device_id=None):
     """
     Delete config backups older than BACKUP_RETENTION_DAYS (0 = disabled).
     Also removes the corresponding .cfg files from disk.
     """
+    from pathlib import Path
+    from app.services.backup_retention import policy, excess
     days = settings.BACKUP_RETENTION_DAYS
-    if not days or days <= 0:
-        return
-    cutoff = datetime.utcnow() - timedelta(days=days)
-    old_rows = db.query(ConfigBackup).filter(ConfigBackup.backup_time < cutoff).all()
+    devices = [device_id] if device_id is not None else [d.id for d in db.query(Device).all()]
+    old_rows = []
+    for did in devices:
+        keep = policy(db, did)
+        if keep is not None:
+            old_rows.extend(excess(db, did, keep))
+        elif days and days > 0:
+            cutoff = datetime.utcnow() - timedelta(days=days)
+            history = db.query(ConfigBackup).filter_by(device_id=did).order_by(ConfigBackup.backup_time.desc(), ConfigBackup.id.desc()).all()
+            old_rows.extend(r for r in history[1:] if r.backup_time < cutoff and not r.is_baseline)
     if not old_rows:
         return
+    paths = [row.file_path for row in old_rows if row.file_path]
     for row in old_rows:
-        if row.file_path and os.path.exists(row.file_path):
-            try:
-                os.remove(row.file_path)
-            except OSError:
-                logger.warning(f"Failed to remove old backup file: {row.file_path}")
         db.delete(row)
     db.commit()
-    logger.info(f"Pruned {len(old_rows)} backups older than {days} days")
+    root = Path(settings.BACKUP_DIR).resolve()
+    for path in paths:
+        target = Path(path).resolve()
+        if root in target.parents and target.suffix.lower() == '.cfg' and not Path(path).is_symlink() and not db.query(ConfigBackup).filter_by(file_path=path).first():
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                logger.warning('Failed to remove retired backup file')
+    logger.info('Pruned %s backups under configured retention', len(old_rows))
 
 
 def get_backup_history(device_id: int, db: Session, limit: int = 50) -> list:

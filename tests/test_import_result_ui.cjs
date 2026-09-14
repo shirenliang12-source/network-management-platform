@@ -1,0 +1,12 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+let appended;
+const ctx=vm.createContext({escapeHtml:s=>String(s??'').replaceAll('<','&lt;').replaceAll('"','&quot;'),document:{createElement:()=>({querySelector:()=>({}),remove(){}}),body:{appendChild:el=>appended=el}}});
+vm.runInContext(fs.readFileSync('app/static/js/import_result.js','utf8'),ctx);
+ctx.showImportDuplicates({message:'未覆盖',duplicates:[{line:3,existing_ids:[1,2],reason:'<unsafe>'}]});
+assert.match(appended.innerHTML,/CSV 第 3 行/);assert.match(appended.innerHTML,/#1、#2/);assert.ok(!appended.innerHTML.includes('<unsafe>'));
+for(const page of ['devices','vms','ip_inventory']) assert.ok(fs.readFileSync(`app/templates/${page}.html`,'utf8').includes('showImportDuplicates('));
+const ipPage=fs.readFileSync('app/templates/ip_inventory.html','utf8');
+assert.ok(ipPage.indexOf('showImportDuplicates(res)')>ipPage.indexOf("API.post('/api/ip-inventory/import'"));
+const integration=fs.readFileSync('app/static/js/integrations.js','utf8');
+assert.ok(integration.includes('&& result.imported_ids[String(vm.external_id)]'));
+console.log('PASS duplicate feedback, escaped content, correct import handler, no false imported badge');

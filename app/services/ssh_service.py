@@ -38,7 +38,7 @@ class SSHService:
     def __init__(self, device: Device):
         self.device = device
         self.connection: Optional[ConnectHandler] = None
-        self.device_type = DEVICE_TYPE_MAP.get(device.device_type, device.device_type)
+        self.device_type = device.device_type
 
     def connect(self) -> bool:
         """Establish SSH connection to the device.
@@ -48,6 +48,8 @@ class SSHService:
         """
         self._last_error = ""
         try:
+            from app.services.command_config import resolve_device_driver
+            self.device_type = resolve_device_driver(self.device.device_type)
             params = {
                 "device_type": self.device_type,
                 "host": self.device.ip_address,
@@ -127,6 +129,8 @@ class SSHService:
 
     def send_command(self, command: str, delay_factor: float = 1.0) -> str:
         """Send a command and return the output."""
+        if not command or not command.strip():
+            return ''
         if not self.connection:
             if not self.connect():
                 return ""
@@ -246,6 +250,8 @@ class SSHService:
             return False
         try:
             cmd = get_command(self.device.device_type, "save_config")
+            if not cmd or not cmd.strip():
+                return False
             delay = get_command_delay(self.device.device_type, "save_config")
             self.connection.send_command(cmd, delay_factor=delay)
             return True

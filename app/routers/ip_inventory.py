@@ -3,10 +3,11 @@ import csv
 import io
 import ipaddress
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.api_models import StrictRequest
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from pydantic import Field
 
 from app.database import get_db
 from app.models import IPInventory, Device, DeviceInfo
@@ -23,6 +24,76 @@ router = APIRouter(prefix="/api/ip-inventory", tags=["ip-inventory"])
 
 class MovePayload(StrictRequest):
     direction: str  # "up" or "down"
+
+
+from typing import Literal
+from pydantic import field_validator
+
+
+class DHCPConfigRequest(StrictRequest):
+    auth_mode: Literal['system', 'manual'] | None = None
+    username: str | None = Field(default=None, max_length=255)
+    password: str | None = Field(default=None, max_length=1000)
+    mode: Literal['静态', 'DHCP'] = '静态'
+    server: str = ''
+    scope: str = ''
+    threshold: int = Field(default=80, ge=1, le=100)
+    interval: int = Field(default=60, ge=0, le=10080)
+
+    @field_validator('server')
+    @classmethod
+    def valid_server(cls, value):
+        import re
+        if value and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}', value):
+            raise ValueError('请输入主机名或 IPv4 地址')
+        return value
+
+    @field_validator('scope')
+    @classmethod
+    def valid_scope(cls, value):
+        return str(ipaddress.IPv4Address(value)) if value else ''
+
+
+@router.get('/{item_id}/dhcp')
+def get_dhcp(item_id: int, db: Session = Depends(get_db)):
+    from app.services.windows_dhcp import read_config
+    if not db.get(IPInventory, item_id):
+        raise HTTPException(404, 'IP 条目不存在')
+    from app.services.dhcp_credentials import public
+    return public(read_config(db, item_id))
+
+
+@router.put('/{item_id}/dhcp')
+def configure_dhcp(item_id: int, payload: DHCPConfigRequest, request: Request, db: Session = Depends(get_db)):
+    from app.services.windows_dhcp import read_config, save_config
+    if not getattr(request.state, 'user', None) or not request.state.user.is_superuser:
+        raise HTTPException(403, '仅管理员可配置 DHCP 服务器及自动同步')
+    if not db.get(IPInventory, item_id):
+        raise HTTPException(404, 'IP 条目不存在')
+    if payload.mode == 'DHCP' and (not payload.server or not payload.scope):
+        raise HTTPException(422, 'DHCP 模式需填写服务器和作用域网络地址')
+    old = read_config(db, item_id)
+    from app.services.dhcp_credentials import merge, public
+    data = merge(old, payload.model_dump())
+    if any(old.get(k) != data.get(k) for k in ('server','scope')):
+        for key in ('snapshot','error','last_attempt'):
+            data.pop(key,None)
+    if all(old.get(k) == data[k] for k in ('server', 'scope', 'mode')):
+        data = {**old, **data}
+        if data.get('snapshot'):
+            data['snapshot']['warning'] = data['snapshot']['percent'] >= data['threshold']
+    save_config(db, item_id, data)
+    return public(data)
+
+
+@router.post('/{item_id}/dhcp/sync')
+def sync_dhcp(item_id: int, db: Session = Depends(get_db)):
+    from app.services.windows_dhcp import sync
+    from app.services.dhcp_credentials import public
+    try:
+        return public(sync(db, item_id))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.get("", response_model=list[IPIInventoryResponse])
@@ -52,6 +123,7 @@ def list_ip_inventory(
             | (IPInventory.zone_interface_name.ilike(like))
             | (IPInventory.asset_sn.ilike(like))
             | (IPInventory.remarks.ilike(like))
+            | (IPInventory.usage.ilike(like))
         )
     items = q.order_by(IPInventory.sort_order.asc(), IPInventory.id.asc()).all()
     return [_to_response(item, db) for item in items]
@@ -109,6 +181,8 @@ def get_item(item_id: int, db: Session = Depends(get_db)):
 
 @router.post("", response_model=IPIInventoryResponse)
 def create_item(payload: IPIInventoryCreate, db: Session = Depends(get_db)):
+    if payload.device_id and not db.get(Device, payload.device_id):
+        raise HTTPException(400, "关联设备不存在，请刷新设备列表后重新选择")
     # Default sort_order: when not provided (or <=0) append to the end of the list.
     if payload.sort_order is None or payload.sort_order <= 0:
         max_so = db.query(func.max(IPInventory.sort_order)).scalar() or 0
@@ -145,8 +219,16 @@ def update_item(item_id: int, payload: IPIInventoryUpdate, db: Session = Depends
     if not item:
         raise HTTPException(status_code=404, detail="IP 条目不存在")
     data = payload.model_dump(exclude_unset=True)
+    if data.get("device_id") and not db.get(Device, data["device_id"]):
+        raise HTTPException(400, "关联设备不存在，请刷新设备列表后重新选择")
     for key, value in data.items():
-        setattr(item, key, value if value is not None else "")
+        if key == "device_id":
+            item.device_id = value or None
+        elif key == "sort_order":
+            if value is not None:
+                item.sort_order = value
+        else:
+            setattr(item, key, value if value is not None else "")
     # Auto-fill asset serial from the associated device when selected and currently empty.
     if "device_id" in data and data["device_id"]:
         sn = _device_serial(db, data["device_id"])
@@ -196,16 +278,23 @@ def move_item(item_id: int, payload: MovePayload, db: Session = Depends(get_db))
 
 @router.delete("/{item_id}")
 def delete_item(item_id: int, db: Session = Depends(get_db)):
+    from app.services.dhcp_integration import linked_prefixes
+    if linked_prefixes(db, f'inventory-{item_id}'):
+        raise HTTPException(409, '此条目的 DHCP 配置已关联 IP 规划，请先解除关联')
     item = db.query(IPInventory).get(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="IP 条目不存在")
+    from app.models import SystemSetting
+    config = db.get(SystemSetting, f'dhcp_scope:{item_id}')
+    if config:
+        db.delete(config)
     db.delete(item)
     db.commit()
     return {"message": "已删除"}
 
 
 class ImportPayload(StrictRequest):
-    csv: str  # raw CSV text (supports BOM / quoted fields)
+    csv: str = Field(max_length=10_000_000)  # CSV body is not a 4000-character text field.
 
 
 # Header aliases -> model field. Keyed by a normalized (lower, stripped) header.
@@ -234,83 +323,8 @@ _IMPORT_HEADER_MAP = {
 
 @router.post("/import")
 def import_csv(payload: ImportPayload, db: Session = Depends(get_db)):
-    """Bulk-import IP inventory entries from CSV text.
-
-    The CSV header row is matched (case-insensitively) against known column
-    names, so both the exported format and common variants are accepted. Rows
-    where none of the core columns carry data are skipped.
-    """
-    raw = payload.csv or ""
-    if not raw.strip():
-        raise HTTPException(status_code=400, detail="CSV 内容为空")
-
-    # Strip a leading UTF-8 BOM if present.
-    if raw.startswith("\ufeff"):
-        raw = raw[1:]
-
-    reader = csv.reader(io.StringIO(raw))
-    rows = [r for r in reader]
-    if not rows:
-        raise HTTPException(status_code=400, detail="CSV 没有可读的行")
-
-    header = [h.strip() for h in rows[0]]
-    col_index = {}
-    for idx, h in enumerate(header):
-        key = h.lower().replace(" ", "")
-        mapped = _IMPORT_HEADER_MAP.get(h.lower().strip()) or _IMPORT_HEADER_MAP.get(key)
-        if mapped:
-            col_index[mapped] = idx
-
-    if not col_index:
-        raise HTTPException(
-            status_code=400,
-            detail="未识别到任何已知列（需要包含 Firewall/Subnet/Company/IP subnet/Mask/VLAN ID/Zone/Interface Name/备注 等之一）",
-        )
-
-    max_so = db.query(func.max(IPInventory.sort_order)).scalar() or 0
-    created = 0
-    skipped = 0
-    errors = []
-    for lineno, row in enumerate(rows[1:], start=2):
-        if not row or all((c or "").strip() == "" for c in row):
-            skipped += 1
-            continue
-        data = {}
-        for field, idx in col_index.items():
-            if idx < len(row):
-                data[field] = (row[idx] or "").strip()
-        # Skip rows that have no usable content at all.
-        if not any(data.get(f) for f in ("firewall", "subnet", "ip_segment", "company", "mask", "vlan", "zone_interface_name", "remarks")):
-            skipped += 1
-            continue
-        try:
-            sort_order = None
-            if data.get("sort_order"):
-                try:
-                    sort_order = int(data["sort_order"])
-                except (ValueError, TypeError):
-                    sort_order = None
-            if sort_order is None or sort_order <= 0:
-                max_so += 1
-                sort_order = max_so
-            item = IPInventory(
-                firewall=data.get("firewall", "") or "",
-                subnet=data.get("subnet", "") or "",
-                company=data.get("company", "") or "",
-                ip_segment=data.get("ip_segment", "") or "",
-                mask=data.get("mask", "") or "",
-                vlan=data.get("vlan", "") or "",
-                zone_interface_name=data.get("zone_interface_name", "") or "",
-                remarks=data.get("remarks", "") or "",
-                sort_order=sort_order,
-                network_type="有线",
-            )
-            db.add(item)
-            created += 1
-        except Exception as e:  # pragma: no cover - defensive
-            errors.append(f"第 {lineno} 行: {e}")
-    db.commit()
-    return {"created": created, "skipped": skipped, "errors": errors}
+    from app.services.csv_inventory_import import run_import
+    return run_import(db, "ip_inventory", payload.csv or "")
 
 
 def _device_serial(db: Session, device_id: int) -> str:
@@ -342,7 +356,9 @@ def _networks_of(item: IPInventory):
         if "-" in net_str:
             try:
                 lo, hi = net_str.split("-")
-                out.append(("range", ipaddress.ip_address(lo.strip()), ipaddress.ip_address(hi.strip())))
+                start, end = ipaddress.ip_address(lo.strip()), ipaddress.ip_address(hi.strip())
+                if start.version == end.version and start <= end:
+                    out.append(("range", start, end))
             except (ValueError, TypeError):
                 continue
     return out
@@ -360,7 +376,7 @@ def _resolve_device_by_network(db: Session, item: IPInventory):
             continue
         for n in nets:
             if isinstance(n, tuple):
-                if n[1] <= ip_obj <= n[2]:
+                if n[1].version == ip_obj.version and n[1] <= ip_obj <= n[2]:
                     return dev
             elif ip_obj in n:
                 return dev
@@ -368,6 +384,8 @@ def _resolve_device_by_network(db: Session, item: IPInventory):
 
 
 def _to_response(item: IPInventory, db: Session = None) -> IPIInventoryResponse:
+    from app.services.windows_dhcp import read_config
+    from app.services.dhcp_credentials import public
     device_name = ""
     device_ips = []
     reverse_linked = False
@@ -380,6 +398,7 @@ def _to_response(item: IPInventory, db: Session = None) -> IPIInventoryResponse:
         device_name = dev.name
         device_ips = device_ip_entries(dev)
     return IPIInventoryResponse(
+        dhcp=public(read_config(db, item.id)) if db is not None else {},
         id=item.id,
         ip_segment=item.ip_segment or "",
         subnet=item.subnet or "",
@@ -389,7 +408,7 @@ def _to_response(item: IPInventory, db: Session = None) -> IPIInventoryResponse:
         company=item.company or "",
         remarks=item.remarks or "",
         sort_order=item.sort_order or 0,
-        device_id=item.device_id,
+        device_id=item.device_id or None,
         asset_sn=item.asset_sn or "",
         network_type=item.network_type or "有线",
         firewall=item.firewall or "",

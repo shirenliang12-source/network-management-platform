@@ -42,6 +42,29 @@ class StrictRequest(BaseModel):
         return username
 
 
+class InventorySelectionRequest(StrictRequest):
+    ids: List[int] = Field(min_length=1, max_length=5000)
+
+    @field_validator("ids")
+    @classmethod
+    def validate_ids(cls, values):
+        if any(value <= 0 for value in values):
+            raise ValueError("ID 必须为正整数")
+        return list(dict.fromkeys(values))
+
+
+class CompanyCatalogRequest(StrictRequest):
+    names: List[str] = Field(max_length=500)
+
+    @field_validator("names")
+    @classmethod
+    def validate_names(cls, values):
+        names = list(dict.fromkeys(value.strip() for value in values if value.strip()))
+        if any(len(value) > 100 for value in names):
+            raise ValueError("公司名称最长 100 个字符")
+        return names
+
+
 class LoginRequest(StrictRequest):
     username: str = Field(min_length=1, max_length=100)
     password: str = Field(default="", max_length=4096)
@@ -164,7 +187,7 @@ class VCenterConfigRequest(StrictRequest):
 
 class IntegrationImportRequest(StrictRequest):
     external_ids: List[str] = Field(min_length=1, max_length=500)
-    update_existing: bool = True
+    update_existing: bool = False
 
     @field_validator("external_ids")
     @classmethod

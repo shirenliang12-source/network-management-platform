@@ -1,0 +1,13 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
+const ctx=vm.createContext({escapeHtml:s=>String(s??'').replaceAll('<','&lt;').replaceAll('"','&quot;')});
+vm.runInContext(fs.readFileSync('app/static/js/dhcp_provider.js','utf8'),ctx);
+const html=ctx.dhcpProviderFields({provider:'fortinet',vdom:'<root>',api_token:'never-render',api_token_configured:true});
+assert.match(html,/fortinet" selected/);assert.match(html,/&lt;root>/);assert.ok(!html.includes('never-render'));
+const inputs={provider:{value:'fortinet'},api_port:{value:'8443'},vdom:{value:'office'},interface:{value:'port5'},netmask:{value:''},api_token:{value:'new-token'},verify_ssl:{checked:true}};
+let box={hidden:false},auth={hidden:false};
+const form={elements:{namedItem:n=>inputs[n]},querySelector:()=>box};
+ctx.configureDhcpProviderForm(form,auth);assert.equal(auth.hidden,true);assert.equal(box.hidden,false);
+const payload=ctx.dhcpProviderPayload(form);assert.equal(payload.vdom,'office');assert.equal(payload.api_port,8443);
+inputs.provider.value='windows';inputs.provider.onchange();assert.equal(auth.hidden,false);assert.equal(box.hidden,true);
+assert.deepEqual(JSON.parse(JSON.stringify(ctx.dhcpProviderPayload(form))),{provider:'windows'});
+console.log('PASS DHCP provider form: type switching, VDOM, encrypted-token placeholder, TLS default');

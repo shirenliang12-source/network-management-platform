@@ -567,6 +567,7 @@ function renderCmdTabs() {
         const builtin = !!t.builtin;
         // Built-ins are protected (no delete button) but can still be renamed.
         const actions = `
+            <button class="btn btn-xs btn-link" onclick="editTypeDriver('${escapeHtml(t.key)}')" title="维护 SSH 连接驱动">驱动</button>
             <button class="btn btn-xs btn-link" onclick="renameDeviceTypePrompt('${escapeHtml(t.key)}')" title="重命名此类型" style="padding: 0 4px; font-size: 12px;">✎</button>
             ${builtin ? '' : `<button class="btn btn-xs btn-link" onclick="deleteDeviceTypePrompt('${escapeHtml(t.key)}')" title="删除此类型" style="padding: 0 4px; font-size: 12px; color: #c00;">✕</button>`}
         `;
@@ -584,6 +585,27 @@ function selectDeviceType(type) {
     currentDeviceType = type;
     renderCmdTabs();
     renderCmdTable();
+}
+
+async function editTypeDriver(type) {
+    try {
+        const data = await API.get('/api/commands/types/drivers');
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay active';
+        overlay.innerHTML = '<div class="modal"><div class="modal-header"><h3>SSH 连接驱动</h3></div><div class="modal-body"><p>显示名称可自由修改；驱动必须与实际设备系统匹配。修改影响所有使用此类型的设备，命令模板和密码保持不变。</p><select class="form-control"></select></div><div class="modal-footer"><button class="btn btn-secondary">取消</button><button class="btn btn-primary">保存</button></div></div>';
+        const select = overlay.querySelector('select');
+        data.drivers.forEach(driver => select.add(new Option(driver, driver)));
+        select.value = data.mapping[type];
+        overlay.querySelector('.btn-secondary').onclick = () => overlay.remove();
+        overlay.querySelector('.btn-primary').onclick = async () => {
+            try {
+                await API.put(`/api/commands/types/${encodeURIComponent(type)}/driver`, {driver: select.value});
+                overlay.remove();
+                showToast('连接驱动已保存', 'success');
+            } catch (e) { showToast(e.message, 'error'); }
+        };
+        document.body.appendChild(overlay);
+    } catch (e) { showToast(e.message, 'error'); }
 }
 
 function renderCmdTable() {
@@ -768,7 +790,7 @@ async function deleteDeviceTypePrompt(typeKey) {
         return;
     }
     const label = (t && t.label) || typeKey;
-    if (!confirm(`确定要删除设备类型「${label}」吗？\n\n删除后，所有引用此类型的设备在采集时会回退到 cisco_ios 模板。\n该设备的类型字段不会被清空。`)) return;
+    if (!confirm(`确定要删除设备类型「${label}」吗？\n\n仍被设备或凭据模板引用的类型不能删除，请先调整引用。`)) return;
     try {
         const result = await API.delete(`/api/commands/types/${encodeURIComponent(typeKey)}`);
         if (result.device_types) deviceTypeInfo = result.device_types;
