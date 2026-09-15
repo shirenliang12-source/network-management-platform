@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 
 engine = create_engine(
     settings.DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False} if settings.DATABASE_URL.startswith('sqlite:') else {},
+    pool_pre_ping=True,
     echo=False,
 )
 
@@ -23,6 +24,8 @@ engine = create_engine(
 @event.listens_for(engine, "connect")
 def _set_sqlite_pragmas(dbapi_conn, conn_record):
     """Apply SQLite durability and relationship guarantees on every connection."""
+    if engine.dialect.name != 'sqlite':
+        return
     cursor = dbapi_conn.cursor()
     try:
         cursor.execute("PRAGMA foreign_keys=ON")
@@ -67,7 +70,9 @@ def check_database_integrity(*, full: bool = False) -> dict:
     """Run read-only SQLite consistency and relationship checks."""
     db_path = _database_path()
     if db_path is None:
-        return {"ok": True, "relations_ok": True, "engine": "external", "integrity": "not_applicable", "foreign_key_violations": []}
+        with engine.connect() as connection:
+            connection.execute(text('SELECT 1'))
+        return {"ok": True, "relations_ok": None, "engine": engine.dialect.name, "integrity": "connection_ok_not_full_integrity_check", "foreign_key_violations": []}
     if not db_path.exists():
         return {"ok": True, "relations_ok": True, "engine": "sqlite", "integrity": "new_database", "foreign_key_violations": []}
     pragma = "integrity_check" if full else "quick_check"
@@ -447,7 +452,11 @@ def init_db():
             raise RuntimeError(
                 f"数据库升级前检查失败: {before['integrity']}，外键异常 {len(before['foreign_key_violations'])} 条"
             )
-        status["backup_path"] = _backup_database()
+        if engine.dialect.name == 'postgresql':
+            from app.services.postgres_backup import upgrade_snapshot
+            status["backup_path"] = upgrade_snapshot(engine, settings.DATABASE_URL, Path(settings.BACKUP_DIR) / 'db_backups')
+        else:
+            status["backup_path"] = _backup_database()
         _write_upgrade_status(status)
         _run_schema_migrations()
         # Upgrade credentials encrypted by pre-v2 releases. This runs only after
@@ -505,6 +514,8 @@ def _run_schema_migrations():
     )
     config = _alembic_config()
     if not has_version_table and has_legacy_schema:
+        if engine.dialect.name != 'sqlite':
+            raise RuntimeError('PostgreSQL must be empty or already managed by Alembic; SQLite legacy baselining is not permitted')
         logger.info("Baselining legacy database into Alembic revision history")
         Base.metadata.create_all(bind=engine)
         _migrate_database()

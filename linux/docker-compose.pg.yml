@@ -1,0 +1,35 @@
+# New PG deployment only. Does not migrate an existing SQLite installation.
+services:
+  postgres:
+    image: postgres:15-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: netmgr
+      POSTGRES_USER: netmgr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your private environment}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netmgr -d netmgr"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  platform:
+    build:
+      context: ..
+      dockerfile: linux/Dockerfile.pg
+    image: ghcr.io/shirenliang12-source/network-management-platform:1.9.51
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "9632:9632"
+    environment:
+      NETMGR_DATABASE_URL: ${NETMGR_DATABASE_URL:?Set postgresql+psycopg URL with percent-encoded password and host postgres}
+      CISCO_NM_DATA_DIR: /data
+    volumes:
+      - app-data:/data
+volumes:
+  pg-data:
+  app-data:

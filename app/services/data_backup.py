@@ -79,6 +79,8 @@ def create_data_backup() -> dict:
     Returns a record dict describing the backup.
     """
     try:
+        if not settings.DATABASE_URL.startswith('sqlite:///'):
+            return {'ok':False,'error':'PostgreSQL 请使用 pg_dump 并备份数据目录及密钥；ZIP 应用备份仅支持 SQLite'}
         db_path = settings.DATABASE_URL.replace("sqlite:///", "", 1)
         os.makedirs(DATA_BACKUP_DIR, exist_ok=True)
         ts = _snapshot_name()
@@ -266,6 +268,8 @@ def restore_data_backup(zip_bytes: bytes) -> dict:
     """
     tmp = None
     staged_paths = []
+    if not settings.DATABASE_URL.startswith('sqlite:///'):
+        return {'ok':False,'error':'禁止向 PostgreSQL 恢复 SQLite ZIP；请停服后由管理员使用 pg_restore 恢复匹配的 PG 备份'}
     try:
         if not zip_bytes:
             return {"ok": False, "error": "空文件"}

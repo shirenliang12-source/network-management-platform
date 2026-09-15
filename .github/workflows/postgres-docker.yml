@@ -1,0 +1,52 @@
+name: PostgreSQL and Docker validation
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  postgres:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:15-bookworm
+        env:
+          POSTGRES_USER: netmgr
+          POSTGRES_PASSWORD: ci-disposable-password
+          POSTGRES_DB: netmgr_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U netmgr -d netmgr_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: python tests/postgres_smoke.py
+        env:
+          NETMGR_DATABASE_URL: postgresql+psycopg://netmgr:ci-disposable-password@localhost:5432/netmgr_test
+          PYTHONPATH: .
+  docker:
+    needs: postgres
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: linux/Dockerfile.pg
+          push: true
+          tags: ghcr.io/shirenliang12-source/network-management-platform:pg-candidate-${{ github.sha }}

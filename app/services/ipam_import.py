@@ -130,6 +130,9 @@ def run_import(db, kind, raw):
         if db.get_bind().dialect.name == 'sqlite' and not db.connection().connection.driver_connection.in_transaction:
             from sqlalchemy import text
             db.execute(text('BEGIN IMMEDIATE'))
+        if db.get_bind().dialect.name == 'postgresql':
+            from sqlalchemy import text
+            db.execute(text('SELECT pg_advisory_xact_lock(190951)'))
         for line, data, net in pending:
             try:
                 if data.get('status') and data['status'] not in IPAM_STATUSES:

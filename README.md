@@ -4,6 +4,10 @@
 
 ## 功能概览
 
+### 1.9.51 PostgreSQL / Docker 迭代候选
+
+新增 PostgreSQL 驱动、连接兼容、升级前 pg_dump 备份、导入与占用并发保护，以及独立 Docker/PG 部署文件。现有 SQLite 默认设置不变，不会自动切换或转移数据。PG 不使用原 SQLite ZIP 恢复功能；必须同时保存数据目录和密钥。详见 [PostgreSQL 部署说明](docs/postgresql-deployment.md)。GitHub 工作流通过真实临时 PG 验证后才发布候选镜像；尚未对现有生产数据执行迁移。
+
 ### 1.9.50 DHCP 多来源首版
 
 - 平台集成增加 Windows / Palo Alto / Fortinet 类型；旧 Windows 配置继续使用，无需重建。PA 按单虚拟系统、指定接口读取；Fortinet 每个 VDOM/接口分别配置，独立统计、去重与 IPAM 关联。

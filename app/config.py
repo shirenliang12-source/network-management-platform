@@ -86,7 +86,7 @@ def _load_or_create_secret_key() -> str:
 class Settings(BaseSettings):
     # Application
     APP_NAME: str = "Cisco 网络自动化运维平台"
-    APP_VERSION: str = "1.9.50"
+    APP_VERSION: str = "1.9.51"
     HOST: str = "0.0.0.0"
     PORT: int = 9632
     DEBUG: bool = False
@@ -125,4 +125,11 @@ settings = Settings()
 # Ensure directories exist
 os.makedirs(settings.BACKUP_DIR, exist_ok=True)
 os.makedirs(settings.EXPORT_DIR, exist_ok=True)
-os.makedirs(os.path.dirname(settings.DATABASE_URL.replace("sqlite:///", "")), exist_ok=True)
+from sqlalchemy.engine import make_url
+_database_url = make_url(settings.DATABASE_URL)
+if _database_url.get_backend_name() not in {'sqlite', 'postgresql'}:
+    raise ValueError('Only SQLite and PostgreSQL databases are supported')
+if _database_url.drivername == 'postgresql':
+    settings.DATABASE_URL = _database_url.set(drivername='postgresql+psycopg').render_as_string(hide_password=False)
+if _database_url.get_backend_name() == 'sqlite' and _database_url.database and _database_url.database != ':memory:':
+    Path(_database_url.database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)

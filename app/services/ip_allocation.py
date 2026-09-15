@@ -14,6 +14,8 @@ def allocate(db, vm_id, prefix_id, address, release=False):
             db.execute(text('BEGIN IMMEDIATE'))
         else:
             db.execute(text("UPDATE system_settings SET value=value WHERE key='__ip_allocation_lock__'"))
+    if db.get_bind().dialect.name == 'postgresql':
+        db.execute(text('SELECT pg_advisory_xact_lock(190951)'))
     try:
         vm, prefix = db.get(VMInstance, vm_id), db.get(IPAMPrefix, prefix_id)
         ip = _address(address)

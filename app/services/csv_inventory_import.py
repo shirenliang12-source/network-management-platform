@@ -76,6 +76,8 @@ def run_import(db, kind, raw):
         # Reserve the writer before reading them, including simultaneous uploads.
         if db.get_bind().dialect.name == 'sqlite' and not db.connection().connection.driver_connection.in_transaction:
             db.execute(text('BEGIN IMMEDIATE'))
+        if db.get_bind().dialect.name == 'postgresql':
+            db.execute(text('SELECT pg_advisory_xact_lock(190951)'))
         existing = db.query(model).all()
         identities = {}
 
