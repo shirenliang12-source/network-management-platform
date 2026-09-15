@@ -48,5 +48,19 @@ jobs:
         with:
           context: .
           file: linux/Dockerfile.pg
-          push: true
-          tags: ghcr.io/shirenliang12-source/network-management-platform:pg-candidate-${{ github.sha }}
+          load: true
+          push: false
+          tags: ghcr.io/shirenliang12-source/network-management-platform:1.9.51
+      - name: Verify container startup with PostgreSQL
+        env:
+          POSTGRES_PASSWORD: ci-disposable-password
+          NETMGR_DATABASE_URL: postgresql+psycopg://netmgr:ci-disposable-password@postgres:5432/netmgr
+        run: |
+          docker compose -f linux/docker-compose.pg.yml up -d --no-build
+          curl --fail --retry 30 --retry-all-errors --retry-delay 3 http://localhost:9632/health
+          docker compose -f linux/docker-compose.pg.yml exec -T postgres psql -U netmgr -d netmgr -c 'SELECT version_num FROM alembic_version'
+      - name: Publish verified image
+        run: |
+          docker tag ghcr.io/shirenliang12-source/network-management-platform:1.9.51 ghcr.io/shirenliang12-source/network-management-platform:pg-candidate-${{ github.sha }}
+          docker push ghcr.io/shirenliang12-source/network-management-platform:pg-candidate-${{ github.sha }}
+          docker push ghcr.io/shirenliang12-source/network-management-platform:1.9.51
