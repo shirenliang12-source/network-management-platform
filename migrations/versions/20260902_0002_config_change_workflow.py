@@ -32,7 +32,7 @@ def upgrade() -> None:
     connection = op.get_bind()
     connection.execute(
         sa.text(
-            "UPDATE config_backups SET is_baseline = 1, review_status = 'ignored' "
+            "UPDATE config_backups SET is_baseline = TRUE, review_status = 'ignored' "
             "WHERE id IN (SELECT MIN(id) FROM config_backups GROUP BY device_id)"
         )
     )
