@@ -70,6 +70,12 @@ def infer_device_type_from_platform(platform_str: str) -> str:
       - 'Cisco AIR-AP1852'         -> cisco_ap
     """
     p = (platform_str or "").upper()
+    if re.search(r'IP[ -]?PHONE|\bCP-\d|\bTELEPHONE\b', p):
+        return 'cisco_ipt'
+    if 'CUCM' in p or 'UNIFIED COMMUNICATIONS MANAGER' in p:
+        return 'cisco_cucm'
+    if re.search(r'AIR-(?:CAP|LAP)|\bC9[01]\d\dAX', p):
+        return 'cisco_ap_lightweight'
     if not p:
         return ""
     if classify_neighbor(p) == "AP 无线接入点":
@@ -118,18 +124,31 @@ def discover_device_neighbors(device: Device, db: Session) -> dict:
     try:
         if not ssh.connect():
             result["error"] = ssh.last_error or f"SSH connection failed to {device.ip_address}"
-            device.status = "offline"
             db.commit()
             return result
 
-        # Delete old neighbor records for this device
-        db.query(Neighbor).filter(Neighbor.device_id == device.id).delete()
-
         all_neighbors = []
 
+        from app.services.command_config import get_command
+        from app.services.lldp_parser import explicit_empty
+        supported = {p for p in ('cdp', 'lldp') if get_command(device.device_type, p + '_neighbors').strip()}
+        if not supported:
+            result['error'] = '此设备类型未配置可用的 CDP/LLDP 命令；已保留历史邻居'
+            return result
+
+        def collect(protocol, getter, parser):
+            if protocol not in supported:
+                return []
+            output = getter()
+            if ssh.last_error:
+                raise ValueError(f'{protocol.upper()} 采集失败，历史邻居未更新：{ssh.last_error}')
+            parsed = parser(output)
+            if not parsed and not explicit_empty(output):
+                raise ValueError(f'{protocol.upper()} 输出为空或格式尚未识别，历史邻居未更新')
+            return parsed
+
         # Try CDP first
-        cdp_output = ssh.get_cdp_neighbors()
-        cdp_neighbors = parse_cdp_neighbors(cdp_output)
+        cdp_neighbors = collect('cdp', ssh.get_cdp_neighbors, parse_cdp_neighbors)
         result["cdp_count"] = len(cdp_neighbors)
 
         for n in cdp_neighbors:
@@ -146,8 +165,7 @@ def discover_device_neighbors(device: Device, db: Session) -> dict:
             all_neighbors.append(neighbor)
 
         # Try LLDP
-        lldp_output = ssh.get_lldp_neighbors()
-        lldp_neighbors = parse_lldp_neighbors(lldp_output)
+        lldp_neighbors = collect('lldp', ssh.get_lldp_neighbors, parse_lldp_neighbors)
         result["lldp_count"] = len(lldp_neighbors)
 
         for n in lldp_neighbors:
@@ -163,21 +181,26 @@ def discover_device_neighbors(device: Device, db: Session) -> dict:
             )
             all_neighbors.append(neighbor)
 
-        # Try to link neighbors to known devices by IP or name
+        # Link only unambiguous identities; substring matching can bind a phone
+        # to a similarly named switch or cross isolated networks with duplicate IPs.
+        from app.services.device_ip_link import build_ip_to_device_map, canonical_device_ip
+        ip_map = build_ip_to_device_map(db)
+        name_map = {}
+        for row in db.query(Device).all():
+            name_map.setdefault((row.name or '').strip().casefold(), []).append(row)
         for neighbor in all_neighbors:
             if neighbor.neighbor_ip:
-                matched = db.query(Device).filter(
-                    Device.ip_address == neighbor.neighbor_ip
-                ).first()
+                matched = ip_map.get(canonical_device_ip(neighbor.neighbor_ip))
                 if matched:
                     neighbor.neighbor_device_id = matched.id
-            if not neighbor.neighbor_device_id and neighbor.neighbor_name:
-                matched = db.query(Device).filter(
-                    Device.name.ilike(f"%{neighbor.neighbor_name}%")
-                ).first()
-                if matched:
-                    neighbor.neighbor_device_id = matched.id
+            elif neighbor.neighbor_name:
+                matches = name_map.get(neighbor.neighbor_name.strip().casefold(), [])
+                if len(matches) == 1:
+                    neighbor.neighbor_device_id = matches[0].id
 
+        # Replace only successfully collected protocols after validating every
+        # output. Disabled protocols and failures retain historical records.
+        db.query(Neighbor).filter(Neighbor.device_id == device.id, Neighbor.protocol.in_(supported)).delete(synchronize_session=False)
         db.add_all(all_neighbors)
 
         device.last_discovery = datetime.utcnow()

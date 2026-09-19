@@ -45,7 +45,7 @@ class DeviceTypeDriverUpdate(StrictRequest):
 def list_type_drivers():
     from netmiko.ssh_dispatcher import CLASS_MAPPER
     from app.services.command_config import resolve_device_driver
-    return {"drivers": sorted(key for key in CLASS_MAPPER if "telnet" not in key),
+    return {"drivers": ['inventory_only'] + sorted(key for key in CLASS_MAPPER if "telnet" not in key),
             "mapping": {t["key"]: resolve_device_driver(t["key"]) for t in list_device_types()}}
 
 

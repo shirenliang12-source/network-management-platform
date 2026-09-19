@@ -57,7 +57,7 @@ def collect_device_info(device: Device, db: Session) -> dict:
     try:
         if not ssh.connect():
             result["error"] = ssh.last_error or f"SSH connection failed to {device.ip_address}"
-            device.status = "offline"
+            # Authentication/session failures must not overwrite reachability.
             db.commit()
             log_event(
                 db, "ERROR", "ssh",

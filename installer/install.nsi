@@ -19,7 +19,7 @@ Icon "${NSISDIR}\Contrib\Graphics\Icons\modern-install.ico"
 UninstallIcon "${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
 
 ; ---- version info block (ASCII only for ANSI build) ----
-VIProductVersion "${VER}.0"
+VIProductVersion "${VER}"
 VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "FileVersion" "${VER}"
 VIAddVersionKey "ProductVersion" "${VER}"

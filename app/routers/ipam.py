@@ -669,7 +669,8 @@ def _ip_response(db: Session, ip: IPAMIPAddress, ip_map: dict = None) -> IPAMIPA
     if dev is None and not ip.assigned_vm_id:
         if ip_map is None:
             ip_map = build_ip_to_device_map(db)
-        dev = ip_map.get((ip.address or "").strip())
+        from app.services.device_ip_link import canonical_device_ip
+        dev = ip_map.get(canonical_device_ip(ip.address))
         if dev is not None:
             reverse_linked = True
     if dev is not None:

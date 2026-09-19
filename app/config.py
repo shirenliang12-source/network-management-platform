@@ -86,11 +86,13 @@ def _load_or_create_secret_key() -> str:
 class Settings(BaseSettings):
     # Application
     APP_NAME: str = "Cisco 网络自动化运维平台"
-    APP_VERSION: str = "1.9.51"
+    APP_VERSION: str = "1.9.52.1"
     HOST: str = "0.0.0.0"
     PORT: int = 9632
     DEBUG: bool = False
     COOKIE_SECURE: bool = False
+    SSL_CERTFILE: str = ""
+    SSL_KEYFILE: str = ""
 
     # Database
     DATABASE_URL: str = f"sqlite:///{DATA_DIR / 'netmgr.db'}"
@@ -121,6 +123,16 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+TLS_EXTERNAL_CONFIGURED = bool(settings.SSL_CERTFILE or settings.SSL_KEYFILE)
+from app.services.tls_config import configured_paths
+_tls_paths = configured_paths(DATA_DIR)
+if _tls_paths and not (settings.SSL_CERTFILE or settings.SSL_KEYFILE):
+    settings.SSL_CERTFILE = _tls_paths['SSL_CERTFILE']
+    settings.SSL_KEYFILE = _tls_paths['SSL_KEYFILE']
+if settings.SSL_CERTFILE or settings.SSL_KEYFILE:
+    if not (settings.SSL_CERTFILE and settings.SSL_KEYFILE):
+        raise ValueError('HTTPS requires both NETMGR_SSL_CERTFILE and NETMGR_SSL_KEYFILE')
+    settings.COOKIE_SECURE = True
 
 # Ensure directories exist
 os.makedirs(settings.BACKUP_DIR, exist_ok=True)

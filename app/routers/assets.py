@@ -280,6 +280,31 @@ def list_servers(
     return [_server_response(db, s) for s in items]
 
 
+from app.api_models import StrictRequest
+from pydantic import Field
+from fastapi.responses import Response
+
+
+class ServerCSVRequest(StrictRequest):
+    csv: str = Field(min_length=1, max_length=10_000_000)
+
+
+@router.get('/servers/export')
+def export_servers_csv(template: bool = False, db: Session = Depends(get_db)):
+    from app.services.server_csv import export_csv
+    return Response(export_csv(db, template), media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': 'attachment; filename=servers.csv'})
+
+
+@router.post('/servers/import')
+def import_servers_csv(payload: ServerCSVRequest, request: Request, db: Session = Depends(get_db)):
+    from app.services.server_csv import import_csv
+    result = import_csv(db, payload.csv)
+    request.state.audit_action = 'servers.import'
+    request.state.audit_detail = {'created': result['created'], 'skipped': result['skipped']}
+    return result
+
+
 @router.get("/servers/{asset_id}", response_model=ServerAssetResponse)
 def get_server(asset_id: int, db: Session = Depends(get_db)):
     s = db.query(ServerAsset).get(asset_id)

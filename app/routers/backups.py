@@ -30,6 +30,18 @@ class RetentionRequest(StrictRequest):
     keep: int | None = Field(default=None, ge=0, le=100000)
 
 
+@router.get('/{backup_id}/content')
+def backup_content(backup_id: int, offset: int = Query(0, ge=0),
+                   limit: int = Query(32768, ge=1, le=65536),
+                   db: Session = Depends(get_db)):
+    """Bounded text preview; do not load the entire configuration into Python."""
+    row = db.query(func.substr(ConfigBackup.config_text, offset + 1, limit),
+                   func.length(ConfigBackup.config_text)).filter(ConfigBackup.id == backup_id).first()
+    if row is None:
+        raise HTTPException(404, '备份不存在')
+    return {'text': row[0] or '', 'total': row[1] or 0, 'offset': offset, 'limit': limit}
+
+
 @router.get('/retention/devices')
 def retention_devices(db: Session = Depends(get_db)):
     from app.services.backup_retention import policy

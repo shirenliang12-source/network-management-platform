@@ -94,6 +94,9 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 app.mount("/static", StaticFiles(directory=str(RESOURCE_DIR / "static")), name="static")
 
+from app.routers import tls_settings
+app.include_router(tls_settings.router)
+
 # Literal /api/backups/data routes must precede /api/backups/{backup_id}.
 for router in (
     backups.app_data_router,

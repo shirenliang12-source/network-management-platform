@@ -7,9 +7,11 @@
 {% include "settings/directory.html" %}
 {% include "settings/system_tools.html" %}
 {% include "settings/system_info.html" %}
+{% include "settings/https.html" %}
 {% endblock %}
 
 {% block scripts %}
 <script>window.MODULES = {{ MODULES | tojson }};</script>
 <script src="/static/js/settings.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/https_settings.js?v={{APP_VERSION}}"></script>
 {% endblock %}

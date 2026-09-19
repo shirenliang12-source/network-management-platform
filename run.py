@@ -121,13 +121,22 @@ def main():
             i += 1
 
     from app.config import DATA_DIR
+    tls_options = {}
+    if settings.SSL_CERTFILE or settings.SSL_KEYFILE:
+        import ssl
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(settings.SSL_CERTFILE, settings.SSL_KEYFILE)
+        tls_options = {'ssl_certfile': settings.SSL_CERTFILE,
+                       'ssl_keyfile': settings.SSL_KEYFILE}
+    scheme = 'https' if tls_options else 'http'
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║          Cisco 网络自动化运维平台 v{settings.APP_VERSION}                    ║
 ╠══════════════════════════════════════════════════════════════╣
-║  访问地址: http://127.0.0.1:{port}                              ║
-║  API文档:  http://127.0.0.1:{port}/docs                         ║
-║  健康检查: http://127.0.0.1:{port}/health                       ║
+║  访问地址: {scheme}://127.0.0.1:{port}                              ║
+║  API文档:  {scheme}://127.0.0.1:{port}/docs                         ║
+║  健康检查: {scheme}://127.0.0.1:{port}/health                       ║
 ║  数据目录: {str(DATA_DIR):46s} ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
@@ -139,6 +148,7 @@ def main():
         host=host,
         port=port,
         log_level="info",
+        **tls_options,
     )
 
 

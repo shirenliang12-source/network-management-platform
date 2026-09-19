@@ -1,7 +1,7 @@
 // Follow relationships in either direction without changing inventory records.
-const relationEndpoints = {vm:'/api/vms', server:'/api/assets/servers',
+const relationEndpoints = {device:'/api/devices', vm:'/api/vms', server:'/api/assets/servers',
     rack:'/api/dc/racks', site:'/api/dc/sites', prefix:'/api/ipam/prefixes', ip:'/api/ipam/ips'};
-const relationPages = {vm:'/vms', server:'/servers', rack:'/datacenter', site:'/datacenter', prefix:'/ipam', ip:'/ipam'};
+const relationPages = {device:'/devices', vm:'/vms', server:'/servers', rack:'/datacenter', site:'/datacenter', prefix:'/ipam', ip:'/ipam'};
 let relationSequence = 0;
 async function showAssetRelations(kind, id) {
     if (!relationEndpoints[kind] || !Number.isInteger(Number(id)) || Number(id) <= 0) return;

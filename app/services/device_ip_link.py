@@ -46,12 +46,25 @@ def device_ip_strings(device: Device) -> list:
 def build_ip_to_device_map(db: Session) -> dict:
     """Map every device IP (primary + extra) -> Device, for reverse lookup."""
     m = {}
+    ambiguous = set()
     for d in db.query(Device).all():
         for e in device_ip_entries(d):
-            ip = (e["ip"] or "").strip()
+            ip = canonical_device_ip(e["ip"])
             if ip:
-                m[ip] = d
+                if ip in m and m[ip].id != d.id:
+                    ambiguous.add(ip)
+                else:
+                    m[ip] = d
+    for ip in ambiguous:
+        m.pop(ip, None)  # Ambiguous ownership is shown by relations, never guessed.
     return m
+
+
+def canonical_device_ip(value):
+    try:
+        return str(ipaddress.ip_interface(str(value).strip()).ip)
+    except ValueError:
+        return ''
 
 
 def _containing_prefix(db: Session, ip_str: str):

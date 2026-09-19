@@ -173,11 +173,13 @@ function utilBar(pct, status){
     return `<div class="util-bar"><div class="util-fill" style="width:${w}%;background:${statusColor(status)}"></div></div>`;
 }
 function switchTab(name){
+    const tabs = ['overview','aggregates','prefixes','ips'];
+    if (!tabs.includes(name)) return;
+    currentIpamTab = name;
     ['overview','aggregates','prefixes','ips'].forEach(t=>{
         document.getElementById('tab-'+t).style.display = (t===name)?'block':'none';
     });
-    document.querySelectorAll('.ipam-tabs .tab-btn').forEach(b=>b.classList.remove('active'));
-    event.target.classList.add('active');
+    document.querySelectorAll('.ipam-tabs .tab-btn').forEach((b, i)=>b.classList.toggle('active', tabs[i] === name));
     if(name==='overview') loadStats();
     if(name==='aggregates') loadAggregates();
     if(name==='prefixes') loadPrefixes();

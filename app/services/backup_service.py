@@ -45,7 +45,7 @@ def backup_device_config(device: Device, db: Session) -> dict:
         if not ssh.connect():
             err_detail = ssh.last_error or f"SSH connection failed to {device.ip_address}"
             result["error"] = err_detail
-            device.status = "offline"
+            # A failed SSH task is not proof of device unreachability.
             db.commit()
             return result
 
@@ -53,7 +53,8 @@ def backup_device_config(device: Device, db: Session) -> dict:
         if not config_text or len(config_text.strip()) < 50:
             err_detail = ssh.last_error or f"Empty or invalid config received from {device.ip_address}"
             result["error"] = err_detail
-            device.status = "offline"
+            # SSH connected; invalid command output is not an offline signal.
+            device.status = "online"
             db.commit()
             return result
 

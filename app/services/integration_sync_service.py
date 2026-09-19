@@ -18,6 +18,7 @@ from app.models import (
     decrypt_password,
 )
 from app.services import integration_service
+from app.services.integration_sources import config_key, provider
 
 
 CONFIG_KEYS = {"zabbix": "integration_zabbix", "vcenter": "integration_vcenter"}
@@ -46,9 +47,7 @@ def locked_fields(vm: VMInstance) -> set[str]:
 
 def load_stored_config(db: Session, source: str) -> dict[str, Any]:
     """Load and decrypt a saved integration configuration for background use."""
-    if source not in CONFIG_KEYS:
-        raise ValueError(f"不支持的数据源: {source}")
-    row = db.get(SystemSetting, CONFIG_KEYS[source])
+    row = db.get(SystemSetting, config_key(source))
     try:
         config = json.loads(row.value) if row and row.value else {}
     except (TypeError, ValueError):
@@ -75,7 +74,7 @@ def source_endpoint(source: str, config: dict[str, Any]) -> str:
 def discover(source: str, config: dict[str, Any], limit: int = 2000) -> dict[str, Any]:
     if source == "zabbix":
         return integration_service.discover_zabbix(config, limit=limit)
-    if source == "vcenter":
+    if provider(source) == "vcenter":
         return integration_service.discover_vcenter(config, limit=limit)
     raise ValueError(f"不支持的数据源: {source}")
 
@@ -501,7 +500,7 @@ def apply_inventory(
     mark_missing: bool = False,
     mode: str = "manual",
 ) -> dict[str, Any]:
-    lock = _SYNC_LOCKS[source]
+    lock = _SYNC_LOCKS.setdefault(source, threading.Lock())
     if not lock.acquire(blocking=False):
         raise RuntimeError(f"{source} 同步任务正在运行，请稍后再试")
     try:
@@ -520,7 +519,7 @@ def apply_inventory(
 
 def run_scheduled_sync(source: str, db: Session, max_attempts: int = 3) -> IntegrationSyncRun:
     """Run a full sync with bounded retries and missing-object detection."""
-    lock = _SYNC_LOCKS[source]
+    lock = _SYNC_LOCKS.setdefault(source, threading.Lock())
     if not lock.acquire(blocking=False):
         raise RuntimeError(f"{source} 同步任务正在运行，请稍后再试")
     try:

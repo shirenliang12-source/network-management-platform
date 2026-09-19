@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
+<p class="text-muted">设备类型按实际系统选择：ASA / FTD、AireOS WLC / Catalyst 9800、自主 IOS AP / IOS 路由器、Fortinet、PAN-OS、Check Point Gaia。轻量 AP、IPT / IP Phone 不应套用 IOS 备份；CUCM 完整备份使用 DRS，本平台尚未接入。FTD 仅采集 LINA 配置，Check Point 仅采集 Gaia 配置，不包含完整安全策略恢复数据。</p>
 <div class="page-header">
     <h1>设备管理</h1>
     <div>
@@ -310,6 +311,7 @@ function showAddModal() {
                     <div class="form-group">
                         <label>Enable密码</label>
                         <input type="password" class="form-control" id="add-enable-password">
+                        <small>ASA：填写独立 Enable 密码，留空仅尝试空密码。FTD：选择 Cisco Firepower FTD 类型，自动进入诊断 CLI，不使用此密码。不支持 FXOS。</small>
                     </div>
                     <div class="form-group">
                         <label>SSH端口</label>
@@ -411,6 +413,7 @@ async function editDevice(id) {
                         <div class="form-group"><label>用户名</label><input type="text" class="form-control" id="edit-username" value="${escapeAttr(d.username)}"></div>
                         <div class="form-group"><label>新密码 (留空不修改)</label><input type="password" class="form-control" id="edit-password" placeholder="••••••"></div>
                         <div class="form-group"><label>新Enable密码 (留空不修改)</label><input type="password" class="form-control" id="edit-enable-password" placeholder="••••••"></div>
+                        <p class="text-muted">ASA 使用独立 Enable 密码；FTD 请选 Cisco Firepower FTD 类型，使用诊断 CLI（不使用 Enable 密码）。不支持 FXOS；FTD 备份不包含完整 FMC/FDM 配置。</p>
                         <div class="form-group"><label>SSH端口</label><input type="number" class="form-control" id="edit-port" value="${d.port}"></div>
                         <div class="form-group"><label><input type="checkbox" id="edit-active" ${d.is_active ? 'checked' : ''}> 参与自动 SSH 任务</label><small>电话、未知设备可仅建档；启用前请确认支持 SSH、驱动与账号正确。</small></div>
                         <div class="form-group">

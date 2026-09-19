@@ -208,15 +208,7 @@ async function loadDeviceFilter() {
 }
 
 async function viewConfig(backupId) {
-    document.getElementById('configModal').classList.add('active');
-    document.getElementById('configContent').textContent = '加载中...';
-    try {
-        const backup = await API.get(`/api/backups/${backupId}`);
-        document.getElementById('configModalTitle').textContent = `配置内容 - ${backup.device_name}`;
-        document.getElementById('configContent').textContent = backup.config_text;
-    } catch (e) {
-        document.getElementById('configContent').textContent = '加载失败: ' + e.message;
-    }
+    return showConfigPage(backupId);
 }
 
 async function runAllBackups() {

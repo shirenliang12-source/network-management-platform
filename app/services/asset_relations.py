@@ -2,11 +2,11 @@
 import ipaddress
 from fastapi import HTTPException
 from sqlalchemy.orm import selectinload
-from app.models import VMInstance, ServerAsset, DCRack, DCSite, IPAMPrefix, IPAMIPAddress
+from app.models import VMInstance, ServerAsset, DCRack, DCSite, IPAMPrefix, IPAMIPAddress, Device
 
-MODELS = {'vm': VMInstance, 'server': ServerAsset, 'rack': DCRack,
+MODELS = {'device': Device, 'vm': VMInstance, 'server': ServerAsset, 'rack': DCRack,
           'site': DCSite, 'prefix': IPAMPrefix, 'ip': IPAMIPAddress}
-MODULES = {'vm': 'vms', 'server': 'servers', 'rack': 'dc', 'site': 'dc', 'prefix': 'ipam', 'ip': 'ipam'}
+MODULES = {'device': 'devices', 'vm': 'vms', 'server': 'servers', 'rack': 'dc', 'site': 'dc', 'prefix': 'ipam', 'ip': 'ipam'}
 
 
 def request_modules(request):
@@ -128,6 +128,37 @@ def relations(db, kind, row_id, allowed=None):
             if 'vms' in allowed:
                 server_ids = {row.id for row in servers}
                 add('通过宿主硬件关联的虚拟机', [_node('vm', row, '、'.join(_vm_ips(row))) for row in vms if row.host_id in server_ids])
+    # Physical inventory participates in reverse lookup too. Match normalized
+    # host addresses, including imported CIDR notation, without persisting links.
+    def physical_ips(row):
+        primary = row.ip_address if isinstance(row, Device) else row.management_ip
+        return {ip for value in [primary] + [x.ip_address for x in row.extra_ips]
+                if (ip := _address(value)) is not None}
+    if kind in {'device', 'server', 'rack', 'site'} and 'ipam' in allowed:
+        rows = [root] if kind in {'device', 'server'} else (
+            db.query(ServerAsset).filter(ServerAsset.rack_id.in_(rack_ids)).all() if 'servers' in allowed else [])
+        addresses = set().union(*(physical_ips(row) for row in rows))
+        add('已登记的规划 IP', [_node('ip', row, row.description or '')
+            for row in db.query(IPAMIPAddress).all() if _address(row.address) in addresses])
+        add('所属规划网段', [_node('prefix', row) for row in db.query(IPAMPrefix).all()
+            if (net := _network(row.prefix)) is not None and any(ip.version == net.version and ip in net for ip in addresses)])
+    if kind in {'prefix', 'ip'}:
+        net = _network(root.prefix) if kind == 'prefix' else None
+        exact = _address(root.address) if kind == 'ip' else None
+        for target, model, relationship, title in [('device', Device, Device.extra_ips, 'IP 匹配的管理设备'),
+                                                  ('server', ServerAsset, ServerAsset.extra_ips, 'IP 匹配的服务器 / 存储')]:
+            if MODULES[target] not in allowed:
+                continue
+            matches = []
+            for row in db.query(model).options(selectinload(relationship)).all():
+                matched = [ip for ip in physical_ips(row) if (ip == exact if kind == 'ip'
+                           else net is not None and ip.version == net.version and ip in net)]
+                if matched:
+                    matches.append(_node(target, row, '匹配 IP：' + '、'.join(sorted(map(str, matched)))))
+                    if target == 'server':
+                        location(row)
+            add(title, matches)
+        notes.append('IP 匹配仅供反查，不自动绑定或占用地址；同 IP 多条记录请核对隔离网络和地址冲突。')
     if allowed != set(MODULES.values()):
         notes.append('仅展示当前账号有权限访问的模块。')
     if {'ipam', 'vms'} <= allowed and kind in {'vm', 'prefix', 'ip'}:

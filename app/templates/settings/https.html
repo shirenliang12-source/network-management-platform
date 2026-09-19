@@ -1,0 +1,13 @@
+<div class="card">
+  <div class="card-header">HTTPS 证书（超级管理员）</div>
+  <div class="card-body">
+    <p>导入 PEM 格式的服务器证书链和私钥；叶证书放在证书链首位。首次配置请在服务器本机通过 127.0.0.1 访问。访问域名/IP 必须包含在证书 SAN 中。</p>
+    <label>证书链（PEM） <input id="tls-cert" type="file" accept=".pem,.crt,.cer"></label>
+    <label>私钥（PEM） <input id="tls-key" type="file" accept=".pem,.key"></label>
+    <label>私钥密码（如有） <input id="tls-password" type="password" autocomplete="new-password"></label>
+    <button type="button" class="btn btn-primary" onclick="importHttpsCertificate()">校验并保存</button>
+    <button type="button" class="btn btn-outline" onclick="loadHttpsStatus()">查看状态</button>
+    <p id="tls-status" role="status"></p>
+    <p>保存不会自动重启。请等待备份/采集任务完成后，由管理员重启平台服务，再使用 https://原地址:原端口 访问。导入证书不会自动使客户端信任该证书。</p>
+  </div>
+</div>

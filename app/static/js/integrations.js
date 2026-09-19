@@ -1,5 +1,37 @@
 let integrationInventory = null;
 let activeIntegrationSource = '';
+let vcenterSources = [];
+function selectedIntegrationSource(source) {
+    return source === 'vcenter' ? (document.getElementById('vcenter-source').value || 'vcenter') : source;
+}
+async function loadVcenterSources(selected) {
+    vcenterSources = await API.get('/api/integrations/vcenter-sources');
+    const select = document.getElementById('vcenter-source');
+    select.replaceChildren();
+    if (!vcenterSources.length) select.add(new Option('原有连接（尚未配置）', 'vcenter'));
+    for (const row of vcenterSources) select.add(new Option(`${row.host}:${row.port} (${row.id})`, row.id));
+    if (selected && Array.from(select.options).some(o => o.value === selected)) select.value = selected;
+    selectVcenterSource();
+}
+function selectVcenterSource() {
+    const config = vcenterSources.find(row => row.id === document.getElementById('vcenter-source').value);
+    if (config) {
+        for (const key of ['host','port','username','timeout']) document.getElementById(`vcenter-${key}`).value = config[key];
+        document.getElementById('vcenter-verify').checked = config.verify_ssl;
+    }
+    document.getElementById('vcenter-password').value = '';
+    document.getElementById('vcenter-password').placeholder = config?.password_configured ? '密码已保存；留空保持不变' : '请输入密码';
+    integrationInventory = null; activeIntegrationSource = '';
+    document.getElementById('inventory-panel').style.display = 'none';
+}
+function newVcenterSource() {
+    const select = document.getElementById('vcenter-source');
+    if (!Array.from(select.options).some(o => o.value === 'new')) select.add(new Option('新增连接', 'new'));
+    select.value = 'new'; selectVcenterSource();
+    for (const key of ['host','username','password']) document.getElementById(`vcenter-${key}`).value = '';
+    document.getElementById('vcenter-port').value = 443;
+    document.getElementById('vcenter-verify').checked = true;
+}
 
 function integrationStatus(source, message, isError = false) {
     const element = document.getElementById(`${source}-status`);
@@ -73,7 +105,11 @@ async function loadIntegrationNICs() {
 
 async function saveIntegrationConfig(source, quiet = false) {
     const config = collectIntegrationConfig(source);
-    const result = await API.put(`/api/integrations/${source}/config`, config);
+    const selected = selectedIntegrationSource(source);
+    const result = source === 'vcenter' && selected === 'new'
+        ? await API.post('/api/integrations/vcenter-sources', config)
+        : await API.put(source === 'vcenter' && selected !== 'vcenter' ? `/api/integrations/vcenter-sources/${selected}` : `/api/integrations/${source}/config`, config);
+    if (source === 'vcenter') await loadVcenterSources(result.id || selected);
     document.getElementById(`${source}-password`).value = '';
     if (result.password_configured) document.getElementById(`${source}-password`).placeholder = '密码已保存；留空保持不变';
     integrationStatus(source, '配置保存成功');
@@ -89,14 +125,15 @@ async function runIntegrationAction(source, action, button) {
         } else if (action === 'test') {
             await saveIntegrationConfig(source, true);
             integrationStatus(source, '正在测试连接…');
-            const result = await API.post(`/api/integrations/${source}/test`);
+            const result = await API.post(`/api/integrations/${selectedIntegrationSource(source)}/test`);
             integrationStatus(source, result.message || '连接成功');
             showToast(result.message || '连接成功', 'success');
         } else if (action === 'discover' || action === 'preview') {
             await saveIntegrationConfig(source, true);
             integrationStatus(source, action === 'preview' ? '正在计算完整差异…' : '正在获取虚拟机与存储清单…');
-            const result = await API.post(`/api/integrations/${source}/${action}`);
-            activeIntegrationSource = source;
+            const selected = selectedIntegrationSource(source);
+            const result = await API.post(`/api/integrations/${selected}/${action}`);
+            activeIntegrationSource = selected;
             integrationInventory = result;
             renderIntegrationInventory(result);
             integrationStatus(source, `获取完成：${result.summary.vms} 台虚拟机，${result.summary.storage} 个存储`);
@@ -104,14 +141,15 @@ async function runIntegrationAction(source, action, button) {
             await saveIntegrationConfig(source, true);
             if (!confirm(`全量同步 ${source}？新增和变更会写入，源端已消失的资产只标记失联，不会删除。`)) return;
             integrationStatus(source, '正在执行全量同步…');
-            const result = await API.post(`/api/integrations/${source}/sync`, {
+            const selected = selectedIntegrationSource(source);
+            const result = await API.post(`/api/integrations/${selected}/sync`, {
                 external_ids: null, update_existing: true, mark_missing: true,
             });
             integrationStatus(source, result.message);
             showToast(result.message, 'success');
             await loadSyncHistory();
-            const preview = await API.post(`/api/integrations/${source}/preview`);
-            activeIntegrationSource = source;
+            const preview = await API.post(`/api/integrations/${selected}/preview`);
+            activeIntegrationSource = selected;
             integrationInventory = preview;
             renderIntegrationInventory(preview);
         }
@@ -124,16 +162,29 @@ async function runIntegrationAction(source, action, button) {
     }
 }
 
+function integrationMatchesState(row, state) {
+    if (state === 'all') return true;
+    if (state === 'error') return !!row.error;
+    if (row.error) return false;
+    if (state === 'imported') return !!row.imported;
+    if (state === 'new') return !row.imported && row.change_type === 'new';
+    if (state === 'actionable') return ['new', 'update'].includes(row.change_type);
+    return row.change_type === state;
+}
+
 function renderIntegrationInventory(result) {
+    if (!result) return;
+    const state = document.getElementById('integration-state-filter')?.value || 'all';
+    const visibleVMs = result.vms.filter(row => integrationMatchesState(row, state));
     document.getElementById('inventory-panel').style.display = '';
     document.getElementById('inventory-title').textContent = `${result.source === 'vcenter' ? 'VMware vCenter' : 'Zabbix'} 发现结果`;
     const diff = result.diff_summary || {};
     document.getElementById('inventory-summary').textContent = `版本 ${result.version || '-'} · 获取时间 ${formatDateTime(result.fetched_at)} · 虚拟机/主机 ${result.summary.vms} · 存储 ${result.summary.storage} · 新增 ${diff.new || 0} · 变更 ${diff.update || 0} · 未变化 ${diff.unchanged || 0} · 失联 ${diff.stale || 0}${result.truncated ? ' · ⚠ 清单超过 2000 条，本次不会标记失联' : ''}`;
     const vmBody = document.getElementById('integration-vm-body');
-    if (!result.vms.length) {
-        vmBody.innerHTML = '<tr><td colspan="8" class="empty-state">没有发现可导入的虚拟机或主机</td></tr>';
+    if (!visibleVMs.length) {
+        vmBody.innerHTML = '<tr><td colspan="8" class="empty-state">当前筛选无匹配记录</td></tr>';
     } else {
-        vmBody.innerHTML = result.vms.map((vm) => {
+        vmBody.innerHTML = visibleVMs.map((vm) => {
             if (vm.error) return `<tr><td></td><td>${escapeHtml(vm.name)}</td><td colspan="6" style="color:#c0392b;">读取失败：${escapeHtml(vm.error)}</td></tr>`;
             const checked = vm.change_type === 'unchanged' ? '' : 'checked';
             const disks = (vm.disks || []).map((disk) => `${disk.name}: ${disk.size}`).join('；');
@@ -218,6 +269,7 @@ document.getElementById('import-selected').addEventListener('click', importSelec
 async function initializeIntegrations() {
     await loadIntegrationNICs();
     await loadIntegrationConfig();
+    await loadVcenterSources();
 }
 initializeIntegrations();
 loadSyncHistory();
