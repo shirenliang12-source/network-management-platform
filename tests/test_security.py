@@ -299,7 +299,7 @@ class UpgradePersistenceTests(unittest.TestCase):
         self.assertNotIn("Copy-Item $cmd", install_ps1)
         self.assertIn('"DataDir" "$DataDir"', nsi)
         self.assertIn("CiscoNetworkManager.previous.exe", nsi)
-        self.assertIn("Invoke-RestMethod", nsi)
+        self.assertIn("--service-context --health-check --expected-version", nsi)
         self.assertIn("Health check passed", nsi)
         self.assertNotIn("cmd /c copy /Y", nsi)
         self.assertIn("New-ItemProperty -Path $StateKey -Name DataDir", install_ps1)

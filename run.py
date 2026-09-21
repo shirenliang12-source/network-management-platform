@@ -165,12 +165,22 @@ if __name__ == "__main__":
         input("按回车键退出...")
         sys.exit(1)
 
+    if '--service-context' in sys.argv:
+        from app.services.service_context import apply_service_context
+        apply_service_context()
     # Parse --data-dir early so config.py picks it up via env var
     _parse_data_dir_early()
 
     try:
         from app.config import settings
         from app.config import DATA_DIR
+        if '--health-check' in sys.argv:
+            from app.services.upgrade_probe import check_health
+            expected = sys.argv[sys.argv.index('--expected-version') + 1]
+            sys.exit(0 if check_health(settings, expected) else 1)
+        if '--print-url' in sys.argv:
+            print(f"{'https' if settings.SSL_CERTFILE else 'http'}://localhost:{settings.PORT}")
+            sys.exit(0)
         _acquire_instance_lock(DATA_DIR)
         from app.main import app
         main()
@@ -190,7 +200,8 @@ if __name__ == "__main__":
         print("  3. 杀毒软件拦截 (请添加白名单)")
         print("  4. 数据目录不可写 (检查 --data-dir 指定的路径是否存在/有权限)")
         print("")
-        input("按回车键退出...")
+        if sys.stdin.isatty():
+            input("按回车键退出...")
         sys.exit(1)
     finally:
         _release_instance_lock()

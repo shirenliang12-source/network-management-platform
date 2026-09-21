@@ -31,16 +31,29 @@ Var DataDirCtl
 Var ExistingDataDir
 Var ExistingAppParameters
 Var PreviousExeAvailable
+Var ExistingApplication
+Var DiagnosticHandle
+Var WebUrl
+!include "safe_stop.nsh"
+
+!macro Diagnostic TEXT
+  DetailPrint "${TEXT}"
+  FileOpen $DiagnosticHandle "$INSTDIR\upgrade-diagnostics.log" a
+  FileSeek $DiagnosticHandle 0 END
+  FileWrite $DiagnosticHandle "${TEXT}$\r$\n"
+  FileClose $DiagnosticHandle
+!macroend
 
 Function .onInit
   ; Initialize upgrade state before any UI page. Silent installs skip custom
   ; page callbacks, so persistence must not depend on DataDirPageCreate.
   ReadRegStr $ExistingDataDir HKLM "Software\CiscoNetworkManager" "DataDir"
   ReadRegStr $ExistingAppParameters HKLM "SYSTEM\CurrentControlSet\Services\${SERVICE}\Parameters" "AppParameters"
+  ReadRegStr $ExistingApplication HKLM "SYSTEM\CurrentControlSet\Services\${SERVICE}\Parameters" "Application"
   ${If} $ExistingDataDir != ""
     StrCpy $DataDir "$ExistingDataDir"
   ${Else}
-    StrCpy $DataDir "$INSTDIR\data"
+    StrCpy $DataDir ""
   ${EndIf}
 FunctionEnd
 
@@ -53,6 +66,9 @@ UninstPage instfiles
 
 ; ===================== DATA DIR PAGE =====================
 Function DataDirPageCreate
+  ${If} $DataDir == ""
+    StrCpy $DataDir "$INSTDIR\data"
+  ${EndIf}
   ; Reuse the persisted data directory on every upgrade. For releases that
   ; predate this registry value, keep the existing NSSM parameters unchanged.
   ${If} $ExistingDataDir != ""
@@ -71,12 +87,18 @@ Function DataDirPageCreate
 
   ${NSD_CreateText} 0 48u 85% 12u "$DataDir"
   Pop $DataDirCtl
+  ${If} $ExistingApplication != ""
+    EnableWindow $DataDirCtl 0
+  ${EndIf}
 
   ${NSD_CreateBrowseButton} 86% 48u 14% 12u "Browse..."
   Pop $0
   ${NSD_OnClick} $0 OnBrowseDataDir
+  ${If} $ExistingApplication != ""
+    EnableWindow $0 0
+  ${EndIf}
 
-  ${NSD_CreateLabel} 0 70u 100% 20u "Note: If upgrading, existing data will be copied to the new location. Leave as default to keep data next to the program."
+  ${NSD_CreateLabel} 0 70u 100% 20u "Upgrade retains the existing service data-directory parameters. Back up the actual data directory first. Moving data is not supported here."
   Pop $0
 
   nsDialogs::Show
@@ -98,25 +120,25 @@ FunctionEnd
 
 ; ===================== INSTALL =====================
 Section "Install"
-  ; ---- stop and REMOVE any previously installed service FIRST ----
+  ${If} $DataDir == ""
+    StrCpy $DataDir "$INSTDIR\data"
+  ${EndIf}
+  ${If} $ExistingApplication != ""
+  ${AndIf} $ExistingApplication != "$INSTDIR\CiscoNetworkManager.exe"
+    MessageBox MB_ICONSTOP "Select the existing program directory. This upgrade cannot move a registered service."
+    Abort
+  ${EndIf}
+  CreateDirectory "$INSTDIR"
+  !insertmacro Diagnostic "Beginning upgrade to ${VER}"
+  ; ---- stop and verify while retaining the existing service identity ----
   ; The running service (and nssm.exe itself) holds the files locked.
   ; CRITICAL: disable nssm auto-restart BEFORE stopping, otherwise nssm
   ; respawns the process between our stop and file-copy, re-locking the exe.
   DetailPrint "Disabling nssm auto-restart (AppExit Default Exit) ..."
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppExit Default Exit'
 
-  DetailPrint "Stopping existing service (for upgrade) ..."
-  nsExec::ExecToLog 'sc stop ${SERVICE}'
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" stop ${SERVICE}'
-  Sleep 3000
-
-  DetailPrint "Terminating any remaining service processes ..."
-  nsExec::ExecToLog 'taskkill /F /IM CiscoNetworkManager.exe /T'
-  nsExec::ExecToLog 'taskkill /F /IM nssm.exe'
-  Sleep 3000
-  ; belt-and-suspenders: repeat kill in case nssm respawned a child
-  nsExec::ExecToLog 'taskkill /F /IM CiscoNetworkManager.exe /T'
-  Sleep 2000
+  DetailPrint "Waiting for confirmed service shutdown ..."
+  !insertmacro RequireStopped
 
   ; Keep the stopped service registration until the new executable is safely
   ; in place. If replacement fails, the previous service can be restarted.
@@ -128,7 +150,12 @@ Section "Install"
   IfFileExists "$INSTDIR\CiscoNetworkManager.exe" 0 no_previous_exe
     ClearErrors
     CopyFiles /SILENT "$INSTDIR\CiscoNetworkManager.exe" "$INSTDIR\CiscoNetworkManager.previous.exe"
-    IfErrors no_previous_exe previous_exe_saved
+    IfErrors previous_backup_failed previous_exe_saved
+  previous_backup_failed:
+    nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppExit Default Restart'
+    nsExec::ExecToLog '"$INSTDIR\nssm.exe" start ${SERVICE}'
+    MessageBox MB_ICONSTOP "Cannot save previous executable. Upgrade aborted before replacement."
+    Abort
   previous_exe_saved:
     StrCpy $PreviousExeAvailable "1"
     DetailPrint "Previous executable saved for upgrade rollback"
@@ -140,6 +167,7 @@ Section "Install"
   ; locked) running CiscoNetworkManager.exe during extraction.
   File "/oname=CiscoNetworkManager.new" "payload\CiscoNetworkManager.exe"
   File "payload\README.txt"
+  File "payload\INSTALLATION-NOTES.txt"
   File "payload\sample_devices.csv"
   File "payload\start.bat"
 
@@ -156,7 +184,7 @@ Section "Install"
     IntOp $R0 $R0 + 1
     ${If} $R0 < 8
       DetailPrint "  replace blocked (attempt $R0), killing process and retrying ..."
-      nsExec::ExecToLog 'taskkill /F /IM CiscoNetworkManager.exe /T'
+      !insertmacro RequireStopped
       Sleep 2000
       Goto replace_loop
     ${EndIf}
@@ -222,10 +250,12 @@ Section "Install"
 
   ; ---- register Windows service via nssm ----
   DetailPrint "Registering Windows service (${SERVICE}) ..."
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${SERVICE} confirm'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" install ${SERVICE} "$INSTDIR\CiscoNetworkManager.exe"'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} Application "$INSTDIR\CiscoNetworkManager.exe"'
   ; Set AppParameters with --data-dir if custom data directory was chosen
-  ${If} $DataDir != "$INSTDIR\data"
+  ${If} $ExistingApplication != ""
+    DetailPrint "Existing service parameters retained unchanged"
+  ${ElseIf} $DataDir != "$INSTDIR\data"
   ${AndIf} $DataDir != ""
     nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppParameters "--host 0.0.0.0 --port ${PORT} --data-dir $\"$DataDir$\""'
     DetailPrint "Service will use data dir: $DataDir"
@@ -261,9 +291,10 @@ Section "Install"
   StrCpy $R0 0
   health_loop:
     Sleep 2000
-    nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { if ((Invoke-RestMethod -Uri $\'http://127.0.0.1:${PORT}/health$\' -TimeoutSec 3).version -eq $\'${VER}$\') { exit 0 } } catch {}; exit 1"'
+    nsExec::ExecToStack /TIMEOUT=20000 '"$INSTDIR\CiscoNetworkManager.exe" --service-context --health-check --expected-version ${VER}'
     Pop $R1
     Pop $R2
+    !insertmacro Diagnostic "Health attempt $R0 exit=$R1; $R2"
     ${If} $R1 == "0"
       DetailPrint "Health check passed: v${VER}"
       Goto health_ok
@@ -276,25 +307,34 @@ Section "Install"
 
     DetailPrint "ERROR: new version did not become healthy; rolling back executable"
     nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppExit Default Exit'
-    nsExec::ExecToLog '"$INSTDIR\nssm.exe" stop ${SERVICE}'
-    nsExec::ExecToLog 'taskkill /F /IM CiscoNetworkManager.exe /T'
-    Sleep 2000
+    !insertmacro RequireStopped
     ${If} $PreviousExeAvailable == "1"
+      ClearErrors
       Delete "$INSTDIR\CiscoNetworkManager.exe"
       CopyFiles /SILENT "$INSTDIR\CiscoNetworkManager.previous.exe" "$INSTDIR\CiscoNetworkManager.exe"
+      ${If} ${Errors}
+        MessageBox MB_ICONSTOP "Rollback copy failed. Previous executable retained; inspect installation directory."
+        Abort
+      ${EndIf}
       nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppExit Default Restart'
       nsExec::ExecToLog '"$INSTDIR\nssm.exe" start ${SERVICE}'
-      MessageBox MB_ICONSTOP "The new version failed to start. The previous executable has been restored and restarted. See $INSTDIR\service.log for details."
+      MessageBox MB_ICONSTOP "The new version failed its health check. The previous executable was restored and a restart attempted. See $INSTDIR\service.log."
     ${Else}
       MessageBox MB_ICONSTOP "The service failed to start. See $INSTDIR\service.log for details."
     ${EndIf}
     Abort
   health_ok:
     Delete "$INSTDIR\CiscoNetworkManager.previous.exe"
+    nsExec::ExecToStack /TIMEOUT=20000 '"$INSTDIR\CiscoNetworkManager.exe" --service-context --print-url'
+    Pop $R1
+    Pop $WebUrl
+    ${If} $R1 != "0"
+      StrCpy $WebUrl "http://localhost:${PORT}"
+    ${EndIf}
 
   ; ---- Start Menu ----
   CreateDirectory "$SMPROGRAMS\${APPNAME}"
-  WriteINIStr "$SMPROGRAMS\${APPNAME}\Manage.url" "InternetShortcut" "URL" "http://localhost:${PORT}"
+  WriteINIStr "$SMPROGRAMS\${APPNAME}\Manage.url" "InternetShortcut" "URL" "$WebUrl"
   CreateShortCut "$SMPROGRAMS\${APPNAME}\Uninstall ${APPNAME}.lnk" "$INSTDIR\uninstall.exe"
 
   ; ---- uninstaller + ARP entry ----
@@ -309,17 +349,13 @@ Section "Install"
   ; Do not replace an unknown legacy --data-dir with the displayed default.
   ; When no registry state exists but service parameters do, those parameters
   ; remain the source of truth on subsequent upgrades.
-  ${If} $ExistingDataDir != ""
-    WriteRegStr HKLM "Software\CiscoNetworkManager" "DataDir" "$DataDir"
-  ${ElseIf} $ExistingAppParameters == ""
-    WriteRegStr HKLM "Software\CiscoNetworkManager" "DataDir" "$DataDir"
-  ${ElseIf} $DataDir != "$INSTDIR\data"
+  ${If} $ExistingApplication == ""
     WriteRegStr HKLM "Software\CiscoNetworkManager" "DataDir" "$DataDir"
   ${EndIf}
   WriteRegStr HKLM "Software\CiscoNetworkManager" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "Software\CiscoNetworkManager" "Version" "${VER}"
 
-  DetailPrint "Installation complete. Open http://localhost:${PORT}"
+  DetailPrint "Installation complete. Open $WebUrl"
 SectionEnd
 
 ; ===================== UNINSTALL =====================

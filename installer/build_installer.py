@@ -130,6 +130,7 @@ def assemble_payload(nssm):
     top_map = {
         EXE_SRC: "CiscoNetworkManager.exe",
         os.path.join(ROOT, "README.md"): "README.txt",
+        os.path.join(ROOT, 'docs', f'release-{VER}.md'): 'INSTALLATION-NOTES.txt',
         os.path.join(ROOT, "sample_devices.csv"): "sample_devices.csv",
         os.path.join(INSTALLER, "start.bat"): "start.bat",
     }
@@ -156,6 +157,8 @@ def build_nsis():
     if not makensis:
         return False
     txt = open(NSI_TMPL, encoding="utf-8").read()
+    os.makedirs(BUILD, exist_ok=True)
+    shutil.copy2(os.path.join(INSTALLER, 'safe_stop.nsh'), os.path.join(BUILD, 'safe_stop.nsh'))
     # inject the real version from app/config.py (regex so future bumps work)
     txt = re.sub(r'!define VER "[\d.]+"', f'!define VER "{VER}"', txt)
     # Compile to an ASCII relative filename. Some NSIS builds cannot open an
