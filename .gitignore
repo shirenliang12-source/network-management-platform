@@ -7,6 +7,9 @@ build_onefile_log.txt
 build*.log
 build_log*.txt
 
+# Nested historical worktree; current source and release snapshot live elsewhere.
+recovery/v1.9.52-enhanced/
+
 # Packaging helper (regenerated each packaging cycle)
 package_portable.py
 
@@ -41,11 +44,14 @@ initial_admin_password.txt
 # ===== Smoke-test scratch dir =====
 _smoke/
 _smoke2/
+_ui_preview_data/
+.instance.lock
 
 # ===== Installer build scratch (regenerated each cycle) =====
 _installer/
 _installer_cache/
 _installer_build/
+_installer_probe/
 installer/nssm.exe
 
 # ===== Editors / OS =====

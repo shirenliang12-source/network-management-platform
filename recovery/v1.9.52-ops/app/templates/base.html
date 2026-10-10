@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0f2f5f">
+    <meta name="color-scheme" content="light">
+    <title>{{ app_name }}</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{APP_VERSION}}">
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+</head>
+<body class="app-body">
+    <a class="skip-link" href="#mainContent">跳到主要内容</a>
+    <div class="mobile-scrim" id="mobileScrim" aria-hidden="true"></div>
+
+    <nav class="sidebar" id="appSidebar" aria-label="平台主导航">
+        <div class="sidebar-header">
+            <div class="brand-mark" aria-hidden="true">CN</div>
+            <div class="brand-copy">
+                <h3>{{ app_name }}</h3>
+                <div class="version">Network Operations · v{{ APP_VERSION }}</div>
+            </div>
+            <button class="icon-button sidebar-close" id="sidebarClose" type="button" aria-label="关闭导航">✕</button>
+        </div>
+
+        <div class="sidebar-search">
+            <span aria-hidden="true">⌕</span>
+            <input id="navSearch" type="search" placeholder="查找功能…" autocomplete="off" aria-label="查找平台功能">
+            <kbd>/</kbd>
+        </div>
+
+        <div class="sidebar-nav" id="sidebarNav">
+            <div class="nav-section-label">总览</div>
+            <a href="/" id="nav-dashboard" data-module="dashboard"><span class="nav-icon">▦</span><span>仪表盘</span></a>
+            <a href="/cockpit" id="nav-cockpit" data-module="dashboard"><span class="nav-icon">▰</span><span>大屏驾驶舱</span></a>
+            <a href="/topology" id="nav-topology" data-module="topology"><span class="nav-icon">◇</span><span>网络拓扑</span></a>
+
+            <div class="nav-section-label">网络与地址</div>
+            <a href="/devices" id="nav-devices" data-module="devices"><span class="nav-icon">◉</span><span>设备管理</span></a>
+            <a href="/ip-inventory" id="nav-ip" data-module="ip_inventory"><span class="nav-icon">▤</span><span>IP 地址清单</span></a>
+            <a href="/ipam" id="nav-ipam" data-module="ipam"><span class="nav-icon">⑂</span><span>IP 地址规划</span></a>
+            <a href="/isp" id="nav-isp" data-module="isp"><span class="nav-icon">↗</span><span>ISP 线路</span></a>
+
+            <div class="nav-section-label">资源与平台</div>
+            <a href="/datacenter" id="nav-datacenter" data-module="dc"><span class="nav-icon">▥</span><span>数据中心</span></a>
+            <a href="/assets" id="nav-assets" data-module="assets"><span class="nav-icon">□</span><span>其他资产</span></a>
+            <a href="/servers" id="nav-servers" data-module="servers"><span class="nav-icon">▣</span><span>服务器存储</span></a>
+            <a href="/vms" id="nav-vms" data-module="vms"><span class="nav-icon">▧</span><span>虚拟机系统</span></a>
+            <a href="/integrations" id="nav-integrations" data-module="integrations"><span class="nav-icon">⌁</span><span>平台集成</span></a>
+
+            <div class="nav-section-label">运维与安全</div>
+            <a href="/backups" id="nav-backups" data-module="backups"><span class="nav-icon">◫</span><span>配置备份</span></a>
+            <a href="/changes" id="nav-changes" data-module="backups"><span class="nav-icon">⇄</span><span>配置变更</span></a>
+            <a href="/accounts" id="nav-accounts" data-module="accounts"><span class="nav-icon">⌘</span><span>账号密码</span></a>
+            <a href="/schedule" id="nav-schedule" data-module="schedule"><span class="nav-icon">◷</span><span>定时任务</span></a>
+            <a href="/system/logs" id="nav-logs" data-module="logs"><span class="nav-icon">≡</span><span>系统日志</span></a>
+            <a href="/settings" id="nav-settings" data-module="settings"><span class="nav-icon">⚙</span><span>系统设置</span></a>
+            <div class="nav-empty" id="navEmpty" hidden>未找到匹配功能</div>
+        </div>
+
+        <div class="sidebar-footer">
+            <div class="user-avatar" id="sideAvatar" aria-hidden="true">A</div>
+            <div class="sidebar-user" id="sidebarUser">
+                <strong id="sideUsername">正在读取账号…</strong>
+                <span>已安全登录</span>
+            </div>
+            <button class="icon-button logout-button" id="logoutBtn" type="button" title="退出登录" aria-label="退出登录">↪</button>
+        </div>
+    </nav>
+
+    <div class="app-stage">
+        <header class="topbar">
+            <div class="topbar-left">
+                <button class="icon-button menu-toggle" id="sidebarToggle" type="button" aria-controls="appSidebar" aria-expanded="false" aria-label="打开导航">☰</button>
+                <div class="breadcrumb">
+                    <span>网络运维平台</span><span aria-hidden="true">/</span><strong id="currentPageTitle">工作台</strong>
+                </div>
+            </div>
+            <div class="topbar-right">
+                <div class="system-health"><span class="health-dot"></span><span>平台运行中</span></div>
+                <span class="topbar-date" id="topbarDate"></span>
+            </div>
+        </header>
+
+        <main class="main-content" id="mainContent" tabindex="-1">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <div class="loading-overlay" id="loadingOverlay" role="status" aria-live="polite" aria-label="正在处理">
+        <div class="loading-panel"><div class="spinner-lg"></div><span>正在处理，请稍候…</span></div>
+    </div>
+    <div class="toast-container" id="toastContainer" aria-live="polite" aria-atomic="true"></div>
+    <div id="modalContainer"></div>
+
+    <script src="/static/js/app.js?v={{APP_VERSION}}"></script>
+    <script src="/static/js/config_preview.js?v={{APP_VERSION}}"></script>
+    <script src="/static/js/import_result.js?v={{APP_VERSION}}"></script>
+    <script src="/static/js/bulk_inventory.js?v={{APP_VERSION}}"></script>
+    {% block scripts %}{% endblock %}
+    <script src="/static/js/operations.js?v={{APP_VERSION}}"></script>
+</body>
+</html>

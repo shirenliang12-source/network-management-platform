@@ -1,0 +1,41 @@
+<!-- AD / LDAP 集成 -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">🏢 AD / LDAP 集成（Active Directory）</div>
+    <div class="card-body">
+        <div style="margin-bottom: 12px; padding: 10px; background: #f8f9fa; border-radius: 6px; font-size: 13px; color: #666;">
+            配置企业 AD / LDAP 服务器后，可一键将 AD 用户同步进「账号密码管理」（AD 为权威源，本地不保存其密码）；
+            并支持对任意账号做「AD 登录校验」。本系统密码均以 SECRET_KEY 加密落库。
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div class="form-group" style="flex:1;min-width:180px;"><label>服务器地址 *</label><input type="text" class="form-control" id="ad-host" placeholder="ad.corp.local 或 10.0.0.5"></div>
+            <div class="form-group" style="width:110px;"><label>端口</label><input type="number" class="form-control" id="ad-port" value="389"></div>
+            <div class="form-group" style="width:130px;"><label>使用 SSL</label><select class="form-control" id="ad-ssl"><option value="0">否 (389)</option><option value="1">是 (636)</option></select></div>
+            <div class="form-group" style="flex:1.4;min-width:220px;"><label>绑定 DN (Bind DN) *</label><input type="text" class="form-control" id="ad-binddn" placeholder="CN=svc_netmgr,OU=Service,DC=corp,DC=local"></div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div class="form-group" style="flex:1;min-width:220px;"><label>绑定密码</label><input type="password" class="form-control" id="ad-bindpw" placeholder="服务账号密码（加密存储，不回显）"></div>
+            <div class="form-group" style="flex:1;min-width:220px;"><label>Base DN</label><input type="text" class="form-control" id="ad-basedn" placeholder="DC=corp,DC=local（留空自动取默认命名上下文）"></div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div class="form-group" style="flex:1.4;min-width:240px;"><label>用户过滤</label><input type="text" class="form-control" id="ad-filter" value="(objectClass=user)"></div>
+            <div class="form-group" style="width:160px;"><label>账号属性</label><input type="text" class="form-control" id="ad-sam" value="sAMAccountName"></div>
+            <div class="form-group" style="width:160px;"><label>显示名属性</label><input type="text" class="form-control" id="ad-name" value="displayName"></div>
+            <div class="form-group" style="width:160px;"><label>邮箱属性</label><input type="text" class="form-control" id="ad-mail" value="mail"></div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap;">
+            <button class="btn btn-sm btn-primary" onclick="saveADConfig()">💾 保存配置</button>
+            <button class="btn btn-sm btn-outline" onclick="testADConnection()">🔌 测试连接</button>
+            <button class="btn btn-sm btn-success" onclick="syncADUsers()">🔄 同步用户到账号密码</button>
+        </div>
+        <div id="adStatus" style="margin-top:12px;"></div>
+
+        <hr style="margin:18px 0;border:none;border-top:1px solid #eee;">
+        <div style="font-weight:600;margin-bottom:8px;">🔐 AD 登录校验（用 AD 验证某账号密码是否有效）</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div class="form-group" style="flex:1;min-width:200px;"><label>用户名</label><input type="text" class="form-control" id="ad-v-user" placeholder="sAMAccountName 或 domain\\sam 或 user@domain"></div>
+            <div class="form-group" style="flex:1;min-width:200px;"><label>密码</label><input type="password" class="form-control" id="ad-v-pw"></div>
+            <button class="btn btn-sm btn-outline" onclick="verifyAD()">校验</button>
+        </div>
+        <div id="adVerifyStatus" style="margin-top:10px;"></div>
+    </div>
+</div>

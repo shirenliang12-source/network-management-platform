@@ -33,6 +33,8 @@ BUILD = os.path.join(ROOT, "_installer_build")
 NSSM_VERSION = "nssm-2.24-101-g897c7ad"
 NSSM_URL = f"https://www.nssm.cc/ci/{NSSM_VERSION}.zip"
 NSSM_SHA1 = "ca2f6782a05af85facf9b620e047b01271edd11d"
+WITH_PG = '--with-pg' in sys.argv
+PG_SHA256 = '70560c1792bed36ee83d738fa17960b89c5ebe5d4b234040111e23b799a5556c'
 
 _MAKENSIS_CANDIDATES = [
     r"C:\Program Files\NSIS\makensis.exe",
@@ -81,6 +83,8 @@ if not EXE_CANDIDATES:
 EXE_SRC = max(EXE_CANDIDATES, key=os.path.getmtime)
 print(f"packaging exe: {EXE_SRC} (mtime {os.path.getmtime(EXE_SRC)})")
 OUT = os.path.join(DIST, f"CiscoNetworkManager-v{VER}-setup.exe")
+if WITH_PG:
+    OUT = os.path.join(DIST, f"CiscoNetworkManager-v{VER}-pg-preview-setup.exe")
 PAYLOAD = os.path.join(BUILD, "payload")
 NSI_TMPL = os.path.join(INSTALLER, "install.nsi")
 NSI_RENDERED = os.path.join(BUILD, "install.nsi")
@@ -138,6 +142,12 @@ def assemble_payload(nssm):
             sys.exit(f"missing {s} (build the app first: python build_bootstrap.py)")
         shutil.copy2(s, os.path.join(PAYLOAD, dst))
     shutil.copy2(nssm, os.path.join(PAYLOAD, "nssm.exe"))
+    preview_notes = os.path.join(ROOT, 'docs', 'release-1.9.53-preview.md' if WITH_PG else f'release-{VER}.md')
+    if os.path.isfile(preview_notes):
+        shutil.copy2(preview_notes, os.path.join(PAYLOAD, 'INSTALLATION-NOTES.txt'))
+    support_notes = os.path.join(ROOT, 'docs', 'device-support-current.md')
+    if os.path.isfile(support_notes):
+        shutil.copy2(support_notes, os.path.join(PAYLOAD, 'DEVICE-SUPPORT.txt'))
     with open(os.path.join(PAYLOAD, "version.txt"), "w", encoding="ascii") as version_file:
         version_file.write(VER + "\n")
     # commands.json is created by the application only when it is missing.
@@ -146,9 +156,23 @@ def assemble_payload(nssm):
     for sub in ("backups", "exports"):
         open(os.path.join(PAYLOAD, "data", sub, ".gitkeep"), "w", encoding="utf-8").close()
     # installer scripts (used by the 7z fallback path)
-    for f in ("install.cmd", "install.ps1", "uninstall.ps1"):
+    for f in ("install.cmd", "install.ps1", "uninstall.ps1", "service_probe.ps1", "stop_instance.ps1"):
         shutil.copy2(os.path.join(INSTALLER, f), os.path.join(PAYLOAD, f))
     print("payload assembled:", PAYLOAD)
+    if WITH_PG:
+        archive_path = os.path.join(CACHE, 'postgresql-15.19-windows.zip')
+        with open(archive_path, 'rb') as handle:
+            if hashlib.file_digest(handle, 'sha256').hexdigest() != PG_SHA256:
+                raise SystemExit('PostgreSQL archive checksum mismatch; packaging refused')
+        # Copy only the server/client distribution and its licenses, not pgAdmin.
+        with zipfile.ZipFile(archive_path) as archive:
+            for member in archive.infolist():
+                parts = member.filename.replace('\\', '/').split('/')
+                if '..' in parts or not parts or parts[0] != 'pgsql':
+                    raise SystemExit('Unsafe PostgreSQL archive member')
+                if len(parts) < 2 or parts[1] not in {'bin', 'lib', 'share', 'doc', 'server_license.txt', 'commandlinetools_3rd_party_licenses.txt'}:
+                    continue
+                archive.extract(member, os.path.join(PAYLOAD, 'postgresql'))
 
 
 def build_nsis():
@@ -156,6 +180,8 @@ def build_nsis():
     if not makensis:
         return False
     txt = open(NSI_TMPL, encoding="utf-8").read()
+    if WITH_PG:
+        txt = '!define WITH_PG\n' + txt
     # inject the real version from app/config.py (regex so future bumps work)
     txt = re.sub(r'!define VER "[\d.]+"', f'!define VER "{VER}"', txt)
     # Compile to an ASCII relative filename. Some NSIS builds cannot open an
@@ -222,6 +248,8 @@ def build():
 
     if build_nsis():
         return
+    if WITH_PG:
+        raise SystemExit('Bundled PG requires NSIS; legacy SFX fallback is not supported')
     print("makensis not found -> falling back to 7z self-extracting installer")
     build_7z_sfx()
 

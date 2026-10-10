@@ -317,6 +317,17 @@ def main():
         ok = st1 == st2 == 200 and json.loads(body1).get('created') == 1 and json.loads(body1).get('skipped') == 1 and json.loads(body2).get('created') == 0 and json.loads(body2).get('skipped') == 2
         passed += log('CSV repeated import is idempotent in frozen build', ok)
         failed += int(not ok)
+        stp, bp, _ = req('POST', '/api/ipam/prefixes/import', {'csv':'prefix\n198.18.249.0/24'}, cookie=admin_cookie)
+        ip_csv = {'csv':'网段(CIDR),IP地址\n198.18.249.0/24,198.18.249.10'}
+        sti, bi, _ = req('POST', '/api/ipam/ips/import', ip_csv, cookie=admin_cookie)
+        strpt, brpt, _ = req('POST', '/api/ipam/ips/import', ip_csv, cookie=admin_cookie)
+        ok = stp == sti == strpt == 200 and json.loads(bi).get('created') == 1 and json.loads(brpt).get('created') == 0
+        passed += log('IPAM address import and repeat dedup in frozen build', ok, f'prefix={stp} ip={sti} repeat={strpt}')
+        failed += int(not ok)
+        stipam, ipam_page, _ = req('GET', '/ipam', cookie=admin_cookie)
+        ok = stipam == 200 and 'currentIpamTab = name' in ipam_page and 'event.target.classList.add' not in ipam_page
+        passed += log('IPAM tab import state fix is bundled', ok)
+        failed += int(not ok)
         st, rack_body, _ = req('GET', '/static/js/rack_view.js', cookie=admin_cookie)
         ok = st == 200 and 'data-rack-u' in rack_body and 'grid-template-columns' in rack_body
         passed += log('Shared aligned rack renderer is bundled', ok)

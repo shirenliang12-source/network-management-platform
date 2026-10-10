@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Any, Literal, Annotated
+from pydantic import StringConstraints
+from app.services.integration_sources import config_key, provider
+
+IntegrationSource = Annotated[str, StringConstraints(pattern=r'^(?:zabbix|vcenter(?:-[0-9a-f]{12})?)$')]
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -33,8 +37,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
 
 
 def _stored_config(db: Session, source: str, with_password: bool = False) -> dict[str, Any]:
-    config = dict(DEFAULTS[source])
-    row = db.get(SystemSetting, CONFIG_KEYS[source])
+    config = dict(DEFAULTS[provider(source)])
+    row = db.get(SystemSetting, config_key(source))
     if row and row.value:
         try:
             saved = json.loads(row.value)
@@ -55,9 +59,9 @@ def _stored_config(db: Session, source: str, with_password: bool = False) -> dic
 
 def _save_config(db: Session, source: str, payload: dict[str, Any]) -> dict[str, Any]:
     existing = _stored_config(db, source, with_password=False)
-    config = dict(DEFAULTS[source])
+    config = dict(DEFAULTS[provider(source)])
     config.update({key: value for key, value in payload.items() if key in config and key != "password"})
-    row = db.get(SystemSetting, CONFIG_KEYS[source])
+    row = db.get(SystemSetting, config_key(source))
     existing_encrypted = ""
     if row and row.value:
         try:
@@ -72,7 +76,7 @@ def _save_config(db: Session, source: str, payload: dict[str, Any]) -> dict[str,
     if row:
         row.value = serialized
     else:
-        db.add(SystemSetting(key=CONFIG_KEYS[source], value=serialized))
+        db.add(SystemSetting(key=config_key(source), value=serialized))
     db.commit()
     return _stored_config(db, source, with_password=False)
 
@@ -144,9 +148,48 @@ def save_vcenter_config(
     return result
 
 
+@router.get('/vcenter-sources')
+def list_vcenter_sources(db: Session = Depends(get_db)):
+    rows = db.query(SystemSetting).filter(SystemSetting.key.like('integration_vcenter%')).all()
+    sources = []
+    for row in rows:
+        source = row.key.removeprefix('integration_')
+        try:
+            sources.append({'id': source, **_stored_config(db, source)})
+        except ValueError:
+            continue
+    return sources
+
+
+@router.post('/vcenter-sources')
+def add_vcenter_source(payload: VCenterConfigRequest, request: Request, db: Session = Depends(get_db)):
+    import secrets
+    for existing in list_vcenter_sources(db):
+        if existing['host'].strip().casefold() == payload.host.strip().casefold() and existing['port'] == payload.port:
+            raise HTTPException(409, '此 vCenter / ESXi 地址已存在，请选择原来源编辑')
+    source = 'vcenter-' + secrets.token_hex(6)
+    result = _save_config(db, source, payload.model_dump())
+    request.state.audit_action = 'integration.vcenter.add_source'
+    request.state.audit_resource_id = source
+    return {'id': source, **result}
+
+
+@router.put('/vcenter-sources/{source}')
+def update_vcenter_source(source: IntegrationSource, payload: VCenterConfigRequest, request: Request, db: Session = Depends(get_db)):
+    if provider(source) != 'vcenter' or not db.get(SystemSetting, config_key(source)):
+        raise HTTPException(404, '来源不存在')
+    current = _stored_config(db, source)
+    if (current['host'].strip().casefold(), current['port']) != (payload.host.strip().casefold(), payload.port):
+        raise HTTPException(409, '来源地址不可修改；连接其他主机请新增来源，避免混淆已有资产')
+    result = _save_config(db, source, payload.model_dump())
+    request.state.audit_action = 'integration.vcenter.update_source'
+    request.state.audit_resource_id = source
+    return {'id': source, **result}
+
+
 @router.post("/{source}/test")
 def test_connection(
-    source: Literal["zabbix", "vcenter"], request: Request, db: Session = Depends(get_db),
+    source: IntegrationSource, request: Request, db: Session = Depends(get_db),
 ):
     config = _configured(db, source)
     try:
@@ -166,7 +209,7 @@ def test_connection(
 
 @router.post("/{source}/discover")
 def discover_inventory(
-    source: Literal["zabbix", "vcenter"],
+    source: IntegrationSource,
     request: Request,
     limit: int = Query(default=500, ge=1, le=2000),
     db: Session = Depends(get_db),
@@ -184,7 +227,7 @@ def discover_inventory(
 
 @router.post("/{source}/preview")
 def preview_sync(
-    source: Literal["zabbix", "vcenter"],
+    source: IntegrationSource,
     request: Request,
     db: Session = Depends(get_db),
 ):
@@ -204,7 +247,7 @@ def preview_sync(
 
 @router.post("/{source}/import")
 def import_inventory(
-    source: Literal["zabbix", "vcenter"],
+    source: IntegrationSource,
     payload: IntegrationImportRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -240,7 +283,7 @@ def import_inventory(
 
 @router.post("/{source}/sync")
 def execute_sync(
-    source: Literal["zabbix", "vcenter"],
+    source: IntegrationSource,
     payload: IntegrationSyncRequest,
     request: Request,
     db: Session = Depends(get_db),

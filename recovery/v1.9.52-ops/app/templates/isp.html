@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1>ISP 线路统计</h1>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <select class="form-control" id="isp-import-mode" style="width:150px;">
+      <option value="skip">重复线路：跳过</option>
+      <option value="update">重复线路：覆盖</option>
+    </select>
+    <input type="file" id="isp-import-file" accept=".csv,text/csv" hidden>
+    <button class="btn btn-outline" id="isp-import">一键导入 CSV</button>
+    <a class="btn btn-outline" href="/api/isp/export">一键导出 CSV</a>
+    <button class="btn btn-outline" id="isp-groups-button">分组管理</button>
+    <button class="btn btn-primary" id="isp-add">新增线路</button>
+  </div>
+</div>
+
+<section class="card" style="padding:16px;margin-bottom:16px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <div><strong>ISP 线路仪表盘</strong><small style="margin-left:8px;color:#666;">统计当前筛选范围</small></div>
+    <button class="btn btn-sm btn-outline" id="isp-dashboard-customize">自定义仪表盘</button>
+  </div>
+  <div id="isp-dashboard" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-top:12px;"></div>
+  <div id="isp-dashboard-settings" hidden style="margin-top:14px;padding-top:12px;border-top:1px solid #e5e7eb;">
+    <span id="isp-dashboard-options"></span>
+    <button class="btn btn-sm btn-primary" id="isp-dashboard-save">保存仪表盘</button>
+  </div>
+</section>
+
+<section class="card" id="isp-groups" hidden style="padding:20px;margin-bottom:16px;">
+  <h2>ISP 分组管理</h2>
+  <p>每行一个分组。正在被线路使用的分组不能直接删除；请先调整线路分组。导入 CSV 中的新分组会自动加入目录。</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">
+    <label>公司分组<textarea class="form-control" id="isp-company-groups" rows="7" placeholder="集团总部&#10;子公司A"></textarea></label>
+    <label>功能分组<textarea class="form-control" id="isp-function-groups" rows="7" placeholder="互联网出口&#10;专线互联&#10;云连接"></textarea></label>
+    <label>区域分组<textarea class="form-control" id="isp-region-groups" rows="7" placeholder="华东&#10;华南&#10;海外"></textarea></label>
+  </div>
+  <p id="isp-groups-error" role="alert" style="color:#b91c1c;"></p>
+  <button class="btn btn-primary" id="isp-groups-save">保存分组</button>
+  <button class="btn" id="isp-groups-cancel">关闭</button>
+</section>
+
+<p>线路网段自动匹配 IPAM 使用状态，不修改 IPAM。IPv4 默认排除网络和广播地址，IPv6 默认排除子网首地址。地址使用率与线路带宽利用率是两个独立指标。</p>
+<div class="card" style="padding:16px">
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;">
+    <label>搜索<input class="form-control" id="isp-search" maxlength="200" type="search" placeholder="运营商 / 线路编号 / 用途 / 位置"></label>
+    <label>用途<select class="form-control" id="isp-filter-purpose"><option value="">全部用途</option></select></label>
+    <label>使用位置<select class="form-control" id="isp-filter-location"><option value="">全部位置</option></select></label>
+    <label>公司分组<select class="form-control" id="isp-filter-company"><option value="">全部公司</option></select></label>
+    <label>功能分组<select class="form-control" id="isp-filter-function"><option value="">全部功能</option></select></label>
+    <label>区域分组<select class="form-control" id="isp-filter-region"><option value="">全部区域</option></select></label>
+    <button class="btn" id="isp-refresh">查询 / 刷新</button>
+    <button class="btn btn-outline" id="isp-filter-clear">清空筛选</button>
+  </div>
+  <p id="isp-summary" role="status"></p>
+  <div style="overflow-x:auto"><table class="data-table"><thead><tr>
+    <th>运营商</th><th>线路编号</th><th>带宽</th><th>网段</th>
+    <th>公司分组</th><th>功能分组</th><th>区域分组</th><th>用途</th><th>使用位置</th>
+    <th>可用总数</th><th>已用</th><th>预留</th><th>剩余</th><th>地址使用率</th><th>操作</th>
+  </tr></thead><tbody id="isp-rows"></tbody></table></div>
+</div>
+
+<section class="card" id="isp-editor" hidden style="padding:20px;margin-top:16px">
+  <h2 id="isp-editor-title">新增线路</h2>
+  <p id="isp-linked" style="white-space:pre-wrap"></p>
+  <form id="isp-form">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">
+      <div class="form-group"><label for="isp-provider">运营商名称 *</label><input class="form-control" id="isp-provider" required maxlength="120"></div>
+      <div class="form-group"><label for="isp-number">线路编号 *</label><input class="form-control" id="isp-number" required maxlength="120"></div>
+      <div class="form-group"><label for="isp-bandwidth">带宽（Mbps）</label><input class="form-control" id="isp-bandwidth" type="number" min="0" max="100000000" step="1" placeholder="例如 100 / 1000"></div>
+      <div class="form-group"><label for="isp-company-group">公司分组</label><select class="form-control" id="isp-company-group"><option value="">未分组</option></select></div>
+      <div class="form-group"><label for="isp-function-group">功能分组</label><select class="form-control" id="isp-function-group"><option value="">未分组</option></select></div>
+      <div class="form-group"><label for="isp-region-group">区域分组</label><select class="form-control" id="isp-region-group"><option value="">未分组</option></select></div>
+    </div>
+    <div class="form-group"><label for="isp-purpose">线路用途</label><input class="form-control" id="isp-purpose" maxlength="500" placeholder="例如：互联网出口 / MPLS / 云专线 / 视频会议"></div>
+    <div class="form-group"><label for="isp-location">使用位置</label><input class="form-control" id="isp-location" maxlength="500" placeholder="例如：上海总部 / A机房 / PA ethernet1/1"></div>
+    <div class="form-group"><label for="isp-networks">网段 CIDR *（每行一个，不可重叠）</label><textarea class="form-control" id="isp-networks" required rows="3" maxlength="7000"></textarea></div>
+    <div class="form-group"><label for="isp-used">已使用 IP（每行一个）</label><textarea class="form-control" id="isp-used" rows="4" maxlength="230000"></textarea></div>
+    <div class="form-group"><label for="isp-reserved">预留 IP（每行一个）</label><textarea class="form-control" id="isp-reserved" rows="3" maxlength="230000"></textarea></div>
+    <div class="form-group"><label for="isp-notes">备注</label><textarea class="form-control" id="isp-notes" maxlength="5000" rows="3"></textarea></div>
+    <p id="isp-error" role="alert" style="color:#b91c1c"></p>
+    <button class="btn btn-primary" id="isp-save" type="submit">保存</button>
+    <button class="btn" id="isp-cancel" type="button">取消</button>
+  </form>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/js/isp.js?v={{APP_VERSION}}"></script>{% endblock %}

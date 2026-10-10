@@ -121,13 +121,22 @@ def main():
             i += 1
 
     from app.config import DATA_DIR
+    tls_options = {}
+    if settings.SSL_CERTFILE or settings.SSL_KEYFILE:
+        import ssl
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(settings.SSL_CERTFILE, settings.SSL_KEYFILE)
+        tls_options = {'ssl_certfile': settings.SSL_CERTFILE,
+                       'ssl_keyfile': settings.SSL_KEYFILE}
+    scheme = 'https' if tls_options else 'http'
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║          Cisco 网络自动化运维平台 v{settings.APP_VERSION}                    ║
 ╠══════════════════════════════════════════════════════════════╣
-║  访问地址: http://127.0.0.1:{port}                              ║
-║  API文档:  http://127.0.0.1:{port}/docs                         ║
-║  健康检查: http://127.0.0.1:{port}/health                       ║
+║  访问地址: {scheme}://127.0.0.1:{port}                              ║
+║  API文档:  {scheme}://127.0.0.1:{port}/docs                         ║
+║  健康检查: {scheme}://127.0.0.1:{port}/health                       ║
 ║  数据目录: {str(DATA_DIR):46s} ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
@@ -139,6 +148,7 @@ def main():
         host=host,
         port=port,
         log_level="info",
+        **tls_options,
     )
 
 
@@ -156,15 +166,57 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # Parse --data-dir early so config.py picks it up via env var
-    _parse_data_dir_early()
-
     try:
+        if '--service-context' in sys.argv:
+            from app.services.service_context import apply_service_context
+            apply_service_context(sys.argv)
+        _parse_data_dir_early()
         from app.config import settings
         from app.config import DATA_DIR
+        if '--print-url' in sys.argv:
+            print(('https' if settings.SSL_CERTFILE else 'http') + f'://localhost:{settings.PORT}', end='')
+            sys.exit(0)
+        if '--health-check' in sys.argv:
+            from app.services.managed_runtime import check_health
+            expected = sys.argv[sys.argv.index('--expected-version') + 1] if '--expected-version' in sys.argv else settings.APP_VERSION
+            check_health(settings, expected)
+            sys.exit(0)
         _acquire_instance_lock(DATA_DIR)
+        if '--prepare-database' in sys.argv:
+            from app.database import init_db
+            init_db()
+            sys.exit(0)
+        if '--setup-pg' in sys.argv:
+            from app.services.builtin_postgres import install_builtin
+            pg_bin = sys.argv[sys.argv.index('--pg-bin') + 1]
+            pg_root = os.path.join(os.environ['PROGRAMDATA'], 'CiscoNetworkManager', 'postgresql')
+            install_builtin(DATA_DIR, pg_bin, pg_root, settings.SECRET_KEY)
+            print('PostgreSQL configured and verified; original SQLite retained.')
+            sys.exit(0)
+        if '--setup-https' in sys.argv:
+            from app.services.managed_runtime import setup_https
+            if os.environ.get('NETMGR_SSL_CERTFILE') or os.environ.get('NETMGR_SSL_KEYFILE'):
+                import ssl
+                ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(settings.SSL_CERTFILE, settings.SSL_KEYFILE)
+                print('Existing service HTTPS certificate retained.')
+                sys.exit(0)
+            names = [sys.argv[i + 1] for i, arg in enumerate(sys.argv[:-1]) if arg == '--tls-name']
+            setup_https(DATA_DIR, names)
+            print('HTTPS configured; certificate trust must be deployed to clients.')
+            sys.exit(0)
         from app.main import app
         main()
     except Exception as e:
+        if '--setup-pg' in sys.argv:
+            from app.services.builtin_postgres import PGSetupError
+            if isinstance(e, PGSetupError):
+                # stdout preserves the numeric exit code through Windows
+                # PowerShell 5.1 even when ErrorActionPreference is Stop.
+                print('PostgreSQL setup: ' + str(e))
+                sys.exit(e.exit_code)
+        if any(flag in sys.argv for flag in ('--health-check', '--setup-https', '--print-url', '--setup-pg', '--prepare-database')):
+            print('Maintenance failed: ' + type(e).__name__, file=sys.stderr)
+            sys.exit(1)
         print("")
         print("=" * 60)
         print(f"ERROR: 程序启动失败!")

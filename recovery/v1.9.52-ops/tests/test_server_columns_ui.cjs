@@ -1,0 +1,13 @@
+const fs=require('fs'),path=require('path'),assert=require('assert');
+const html=fs.readFileSync(path.join(__dirname,'../app/templates/servers.html'),'utf8');
+const header=html.match(/<thead>([\s\S]*?)<\/thead>/)[1];
+const columns=[...header.matchAll(/<th(?:\s[^>]*)?>(.*?)<\/th>/g)].map(match=>match[1]);
+assert.equal(columns.length,9);
+assert.deepEqual(columns.slice(4,7),['站点','IP 地址','U 位']);
+const row=html.split('body.innerHTML = items.map(s =>')[1].split('</tr>')[0];
+assert.equal((row.match(/<td>/g)||[]).length,9);
+assert(row.indexOf('site_name') < row.indexOf('renderServerIps'));
+assert(row.indexOf('renderServerIps') < row.indexOf('u_start'));
+assert(!html.includes('colspan="8"'));
+assert(html.includes('colspan="9"'));
+console.log('PASS server columns: nine headers/cells, Site -> IP -> U, empty rows aligned');

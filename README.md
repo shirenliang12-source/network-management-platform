@@ -4,6 +4,14 @@
 
 ## 功能概览
 
+### 1.9.53 安装适配候选（PG 尚未完成 Windows 端到端验证）
+
+增加持久化 HTTPS 配置、证书保留、证书校验健康检查及可选内置 PostgreSQL 安装入口。PG 候选单独命名为 pg-preview；本机应用控制拦截官方 PG 执行，不能当作已验证生产升级包。SQLite→PG 使用保留原库的快照与逐表校验流程，禁止覆盖非空目标库。详见 docs/release-1.9.53-preview.md。已交付的 1.9.52 修复安装包不受影响。
+
+### 1.9.52 Windows SQLite 修复版
+
+修复 IPAM 页签导入入口、UTC 时间显示、备份失败误判离线；配置查看改为分页。新增服务器存储 CSV 导入导出、vCenter 结果筛选和多连接配置。保留原 SQLite 数据目录及密钥，不自动迁移 PG，不自动启用 HTTPS。升级前备份整个数据目录，直接在原安装位置升级，不要先卸载。详情见 docs/release-1.9.52.md。
+
 ### 1.9.51 PostgreSQL / Docker 迭代候选
 
 新增 PostgreSQL 驱动、连接兼容、升级前 pg_dump 备份、导入与占用并发保护，以及独立 Docker/PG 部署文件。现有 SQLite 默认设置不变，不会自动切换或转移数据。PG 不使用原 SQLite ZIP 恢复功能；必须同时保存数据目录和密钥。详见 [PostgreSQL 部署说明](docs/postgresql-deployment.md)。GitHub 工作流通过真实临时 PG 验证后才发布候选镜像；尚未对现有生产数据执行迁移。

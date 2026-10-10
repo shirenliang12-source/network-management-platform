@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#06162a">
+    <title>大屏驾驶舱 · {{ app_name }}</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{APP_VERSION}}">
+    <link rel="stylesheet" href="/static/css/cockpit.css?v={{APP_VERSION}}">
+</head>
+<body class="cockpit-page">
+    <header class="cockpit-header">
+        <div class="cockpit-brand">
+            <span class="cockpit-logo">CN</span>
+            <div><h1>网络运营驾驶舱</h1><p>{{ app_name }} · 综合态势</p></div>
+        </div>
+        <div class="cockpit-status">
+            <span class="cockpit-live"><i></i>实时监控</span>
+            <span id="cockpit-update">等待首次刷新</span>
+            <strong id="cockpit-clock">--:--:--</strong>
+        </div>
+        <div class="cockpit-actions">
+            <select id="cockpit-interval" aria-label="自动刷新间隔">
+                <option value="30">30秒刷新</option>
+                <option value="60" selected>60秒刷新</option>
+                <option value="300">5分钟刷新</option>
+                <option value="0">暂停刷新</option>
+            </select>
+            <button type="button" id="cockpit-refresh">立即刷新</button>
+            <button type="button" id="cockpit-fullscreen">全屏</button>
+            <a href="/">返回平台</a>
+        </div>
+    </header>
+
+    <main class="cockpit-content">
+        <section class="cockpit-kpis" aria-label="关键运营指标">
+            <article class="cockpit-kpi tone-blue"><span>设备总数</span><strong id="ck-device-total">-</strong><small>纳管网络设备</small></article>
+            <article class="cockpit-kpi tone-green"><span>在线设备</span><strong id="ck-device-online">-</strong><small id="ck-online-rate">可用率 -</small></article>
+            <article class="cockpit-kpi tone-red"><span>离线 / 未知</span><strong id="ck-device-risk">-</strong><small>需要关注</small></article>
+            <article class="cockpit-kpi tone-cyan"><span>今日备份</span><strong id="ck-backup-today">-</strong><small>配置保护记录</small></article>
+            <article class="cockpit-kpi tone-orange"><span>配置变更</span><strong id="ck-config-change">-</strong><small>近24小时设备</small></article>
+            <article class="cockpit-kpi tone-purple"><span>IP利用率</span><strong id="ck-ipam-util">-</strong><small id="ck-ipam-count">规划网段 -</small></article>
+            <article class="cockpit-kpi tone-teal"><span>运行中虚机</span><strong id="ck-vm-running">-</strong><small id="ck-vm-total">虚机总数 -</small></article>
+            <article class="cockpit-kpi tone-indigo"><span>ISP线路</span><strong id="ck-isp-lines">-</strong><small id="ck-isp-bandwidth">带宽 -</small></article>
+        </section>
+
+        <section class="cockpit-grid cockpit-grid-main">
+            <article class="cockpit-panel panel-device-health">
+                <header><div><span>DEVICE HEALTH</span><h2>设备健康度</h2></div><a href="/devices">查看设备</a></header>
+                <div class="health-layout">
+                    <div class="health-ring" id="ck-health-ring"><div><strong id="ck-health-rate">-</strong><span>在线率</span></div></div>
+                    <div class="health-legend">
+                        <div><i class="green"></i><span>在线</span><strong id="ck-legend-online">-</strong></div>
+                        <div><i class="red"></i><span>离线</span><strong id="ck-legend-offline">-</strong></div>
+                        <div><i class="gray"></i><span>未知</span><strong id="ck-legend-unknown">-</strong></div>
+                    </div>
+                </div>
+                <div class="cockpit-bars" id="ck-device-types"><div class="cockpit-empty">暂无设备类型数据</div></div>
+            </article>
+
+            <article class="cockpit-panel panel-posture">
+                <header><div><span>OPERATION POSTURE</span><h2>综合运营态势</h2></div><span class="panel-note">异常优先</span></header>
+                <div class="posture-map">
+                    <div class="posture-core"><span>运营状态</span><strong id="ck-posture-state">稳定</strong><small>综合现有模块</small></div>
+                    <a href="/backups" class="posture-node node-top"><span>配置保障</span><strong id="ck-posture-backup">-</strong></a>
+                    <a href="/ipam" class="posture-node node-right"><span>地址空间</span><strong id="ck-posture-ipam">-</strong></a>
+                    <a href="/datacenter" class="posture-node node-bottom"><span>机柜资源</span><strong id="ck-posture-rack">-</strong></a>
+                    <a href="/integrations" class="posture-node node-left"><span>平台同步</span><strong id="ck-posture-sync">-</strong></a>
+                </div>
+                <div class="posture-summary" id="ck-posture-summary">正在汇总运营数据…</div>
+            </article>
+
+            <article class="cockpit-panel panel-alerts">
+                <header><div><span>ATTENTION</span><h2>需要关注</h2></div><strong id="ck-alert-count">0</strong></header>
+                <div class="cockpit-alert-list" id="ck-alerts"><div class="cockpit-empty">正在分析…</div></div>
+            </article>
+        </section>
+
+        <section class="cockpit-grid cockpit-grid-bottom">
+            <article class="cockpit-panel">
+                <header><div><span>IP CAPACITY</span><h2>高利用率网段</h2></div><a href="/ipam">地址规划</a></header>
+                <div class="cockpit-bars capacity-bars" id="ck-ipam-prefixes"><div class="cockpit-empty">暂无网段数据</div></div>
+            </article>
+            <article class="cockpit-panel">
+                <header><div><span>VIRTUALIZATION</span><h2>虚拟机运行状态</h2></div><a href="/vms">虚机清单</a></header>
+                <div class="state-grid" id="ck-vm-states"><div class="cockpit-empty">暂无虚机数据</div></div>
+                <div class="storage-line"><span>服务器 / 存储资产</span><strong id="ck-server-assets">-</strong></div>
+            </article>
+            <article class="cockpit-panel">
+                <header><div><span>FACILITY & CIRCUIT</span><h2>资源与线路</h2></div><a href="/isp">线路管理</a></header>
+                <div class="resource-grid">
+                    <div><span>站点</span><strong id="ck-sites">-</strong></div><div><span>机柜</span><strong id="ck-racks">-</strong></div>
+                    <div><span>其他资产</span><strong id="ck-it-assets">-</strong></div><div><span>邻居链路</span><strong id="ck-neighbors">-</strong></div>
+                </div>
+                <div class="isp-usage"><div><span>线路平均使用率</span><strong id="ck-isp-util">-</strong></div><div class="cockpit-progress"><i id="ck-isp-util-bar"></i></div></div>
+            </article>
+            <article class="cockpit-panel">
+                <header><div><span>RECENT ACTIVITY</span><h2>最近任务</h2></div><a href="/backups">任务记录</a></header>
+                <div class="cockpit-task-list" id="ck-tasks"><div class="cockpit-empty">暂无任务记录</div></div>
+            </article>
+        </section>
+    </main>
+
+    <div class="toast-container" id="toastContainer" aria-live="polite"></div>
+    <script src="/static/js/app.js?v={{APP_VERSION}}"></script>
+    <script src="/static/js/cockpit.js?v={{APP_VERSION}}"></script>
+</body>
+</html>

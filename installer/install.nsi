@@ -31,8 +31,38 @@ Var DataDirCtl
 Var ExistingDataDir
 Var ExistingAppParameters
 Var PreviousExeAvailable
+Var HttpsCtl
+Var EnableHttps
+Var RuntimeExisted
+Var WebScheme
+Var PgCtl
+Var EnablePg
+Var DiagnosticHandle
+
+!macro Diagnostic TEXT
+  DetailPrint "${TEXT}"
+  FileOpen $DiagnosticHandle "$INSTDIR\upgrade-diagnostics.log" a
+  FileSeek $DiagnosticHandle 0 END
+  FileWrite $DiagnosticHandle "${TEXT}$\r$\n"
+  FileClose $DiagnosticHandle
+!macroend
+
+!macro StopForUpgrade
+  nsExec::ExecToStack /TIMEOUT=90000 'powershell.exe -NoProfile -NonInteractive -File "$PLUGINSDIR\stop_instance.ps1" -InstallDir "$INSTDIR"'
+  Pop $R1
+  Pop $R2
+  !insertmacro Diagnostic "Verified stop exit=$R1; $R2"
+  ${If} $R1 != "0"
+    nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppExit Default Restart'
+    MessageBox MB_ICONSTOP "The service could not be safely stopped. No further replacement will be attempted. Existing data and recovery files are retained. See upgrade-diagnostics.log."
+    Abort
+  ${EndIf}
+!macroend
 
 Function .onInit
+  StrCpy $EnableHttps "0"
+  StrCpy $EnablePg "0"
+  StrCpy $WebScheme "http"
   ; Initialize upgrade state before any UI page. Silent installs skip custom
   ; page callbacks, so persistence must not depend on DataDirPageCreate.
   ReadRegStr $ExistingDataDir HKLM "Software\CiscoNetworkManager" "DataDir"
@@ -40,13 +70,15 @@ Function .onInit
   ${If} $ExistingDataDir != ""
     StrCpy $DataDir "$ExistingDataDir"
   ${Else}
-    StrCpy $DataDir "$INSTDIR\data"
+    ; Resolve the default after the user selects the actual installation folder.
+    StrCpy $DataDir ""
   ${EndIf}
 FunctionEnd
 
 ; ---- pages ----
 Page directory
 Page custom DataDirPageCreate DataDirPageLeave
+Page custom HttpsPageCreate HttpsPageLeave
 Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
@@ -96,27 +128,48 @@ Function DataDirPageLeave
   StrCpy $DataDir "$0"
 FunctionEnd
 
+Function HttpsPageCreate
+  nsDialogs::Create 1018
+  Pop $0
+  ${NSD_CreateCheckbox} 0 12u 100% 20u "Enable HTTPS (preserve existing certificates on upgrade)"
+  Pop $HttpsCtl
+  ${NSD_SetState} $HttpsCtl $EnableHttps
+  ${NSD_CreateLabel} 0 42u 100% 62u "A private certificate will be generated for localhost and this computer name. Browsers require administrator-approved certificate trust. Existing HTTPS settings are preserved even when this box is unchecked. Certificate and key files remain in the data directory."
+  Pop $0
+!ifdef WITH_PG
+  ${NSD_CreateCheckbox} 0 115u 100% 20u "Install built-in PostgreSQL and migrate SQLite (preview)"
+  Pop $PgCtl
+  ${NSD_SetState} $PgCtl $EnablePg
+!endif
+  nsDialogs::Show
+FunctionEnd
+
+Function HttpsPageLeave
+  ${NSD_GetState} $HttpsCtl $EnableHttps
+!ifdef WITH_PG
+  ${NSD_GetState} $PgCtl $EnablePg
+!endif
+FunctionEnd
+
 ; ===================== INSTALL =====================
 Section "Install"
-  ; ---- stop and REMOVE any previously installed service FIRST ----
+  ${If} $DataDir == ""
+    StrCpy $DataDir "$INSTDIR\data"
+  ${EndIf}
+  CreateDirectory "$INSTDIR"
+  !insertmacro Diagnostic "Beginning upgrade to v${VER}"
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File "payload\stop_instance.ps1"
+  ; ---- stop and verify the existing service; retain its registration ----
   ; The running service (and nssm.exe itself) holds the files locked.
   ; CRITICAL: disable nssm auto-restart BEFORE stopping, otherwise nssm
   ; respawns the process between our stop and file-copy, re-locking the exe.
   DetailPrint "Disabling nssm auto-restart (AppExit Default Exit) ..."
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppExit Default Exit'
 
-  DetailPrint "Stopping existing service (for upgrade) ..."
-  nsExec::ExecToLog 'sc stop ${SERVICE}'
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" stop ${SERVICE}'
-  Sleep 3000
-
-  DetailPrint "Terminating any remaining service processes ..."
-  nsExec::ExecToLog 'taskkill /F /IM CiscoNetworkManager.exe /T'
-  nsExec::ExecToLog 'taskkill /F /IM nssm.exe'
-  Sleep 3000
-  ; belt-and-suspenders: repeat kill in case nssm respawned a child
-  nsExec::ExecToLog 'taskkill /F /IM CiscoNetworkManager.exe /T'
-  Sleep 2000
+  DetailPrint "Waiting for verified service shutdown ..."
+  !insertmacro StopForUpgrade
 
   ; Keep the stopped service registration until the new executable is safely
   ; in place. If replacement fails, the previous service can be restarted.
@@ -128,7 +181,12 @@ Section "Install"
   IfFileExists "$INSTDIR\CiscoNetworkManager.exe" 0 no_previous_exe
     ClearErrors
     CopyFiles /SILENT "$INSTDIR\CiscoNetworkManager.exe" "$INSTDIR\CiscoNetworkManager.previous.exe"
-    IfErrors no_previous_exe previous_exe_saved
+    IfErrors previous_exe_failed previous_exe_saved
+  previous_exe_failed:
+    nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppExit Default Restart'
+    nsExec::ExecToLog '"$INSTDIR\nssm.exe" start ${SERVICE}'
+    MessageBox MB_ICONSTOP "Cannot save the previous executable. Upgrade cancelled before replacement."
+    Abort
   previous_exe_saved:
     StrCpy $PreviousExeAvailable "1"
     DetailPrint "Previous executable saved for upgrade rollback"
@@ -140,8 +198,19 @@ Section "Install"
   ; locked) running CiscoNetworkManager.exe during extraction.
   File "/oname=CiscoNetworkManager.new" "payload\CiscoNetworkManager.exe"
   File "payload\README.txt"
+  File "payload\INSTALLATION-NOTES.txt"
+  File "payload\DEVICE-SUPPORT.txt"
   File "payload\sample_devices.csv"
   File "payload\start.bat"
+  File "payload\service_probe.ps1"
+!ifdef WITH_PG
+  ; Install only when absent. Never overwrite binaries of a running DB service.
+  IfFileExists "$INSTDIR\postgresql\pgsql\bin\pg_ctl.exe" pg_binaries_present 0
+    SetOutPath "$INSTDIR\postgresql"
+    File /r "payload\postgresql\*.*"
+    SetOutPath "$INSTDIR"
+  pg_binaries_present:
+!endif
 
   ; ---- robust replace of the running exe (retry, then reboot-pending) ----
   DetailPrint "Replacing running executable (with retry) ..."
@@ -156,7 +225,7 @@ Section "Install"
     IntOp $R0 $R0 + 1
     ${If} $R0 < 8
       DetailPrint "  replace blocked (attempt $R0), killing process and retrying ..."
-      nsExec::ExecToLog 'taskkill /F /IM CiscoNetworkManager.exe /T'
+      !insertmacro StopForUpgrade
       Sleep 2000
       Goto replace_loop
     ${EndIf}
@@ -214,6 +283,61 @@ Section "Install"
   ${EndIf}
 
   ; ---- firewall ----
+  ; Snapshot only our managed configuration; private keys and DB files are kept.
+  StrCpy $RuntimeExisted "0"
+  IfFileExists "$DataDir\managed\runtime.json" 0 runtime_saved
+    ClearErrors
+    CopyFiles /SILENT "$DataDir\managed\runtime.json" "$DataDir\managed\runtime.previous.json"
+    IfErrors runtime_backup_failed
+    StrCpy $RuntimeExisted "1"
+  runtime_saved:
+!ifdef WITH_PG
+  ${If} $EnablePg == "1"
+    nsExec::ExecToStack /TIMEOUT=1200000 '"$INSTDIR\CiscoNetworkManager.exe" --service-context --data-dir "$DataDir" --setup-pg --pg-bin "$INSTDIR\postgresql\pgsql\bin"'
+    Pop $R1
+    Pop $R2
+    ${If} $R1 == "20"
+      DetailPrint "$R2"
+      MessageBox MB_ICONEXCLAMATION|MB_YESNO "Windows application control blocked PostgreSQL. No migration was started; the original SQLite database and configuration are unchanged.$\r$\n$\r$\nContinue this upgrade using SQLite? Choose No to cancel and retain the previous program.$\r$\n$\r$\n$R2" /SD IDNO IDYES pg_continue_sqlite
+      Goto runtime_prepare_failed
+      pg_continue_sqlite:
+      StrCpy $EnablePg "0"
+      StrCpy $R1 "0"
+    ${EndIf}
+    ${If} $R1 != "0"
+      DetailPrint "$R2"
+      Goto runtime_prepare_failed
+    ${EndIf}
+  ${EndIf}
+!endif
+  ${If} $EnableHttps == "1"
+    nsExec::ExecToStack '"$INSTDIR\CiscoNetworkManager.exe" --service-context --data-dir "$DataDir" --setup-https'
+    Pop $R1
+    Pop $R2
+    ${If} $R1 != "0"
+      Goto runtime_prepare_failed
+    ${EndIf}
+  ${EndIf}
+  Goto runtime_prepare_ok
+  runtime_prepare_failed:
+    ${If} $RuntimeExisted == "1"
+      CopyFiles /SILENT "$DataDir\managed\runtime.previous.json" "$DataDir\managed\runtime.json"
+    ${Else}
+      Delete "$DataDir\managed\runtime.json"
+    ${EndIf}
+    Goto runtime_restore_program
+  runtime_backup_failed:
+    ; Never delete the live configuration if creating its backup failed.
+    DetailPrint "Cannot back up runtime settings; upgrade cancelled"
+  runtime_restore_program:
+    ${If} $PreviousExeAvailable == "1"
+      CopyFiles /SILENT "$INSTDIR\CiscoNetworkManager.previous.exe" "$INSTDIR\CiscoNetworkManager.exe"
+      nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppExit Default Restart'
+      nsExec::ExecToLog '"$INSTDIR\nssm.exe" start ${SERVICE}'
+    ${EndIf}
+    MessageBox MB_ICONSTOP "Database or HTTPS setup failed. Previous configuration and program were retained. Original SQLite and any PG recovery data were not removed."
+    Abort
+  runtime_prepare_ok:
   DetailPrint "Configuring Windows Firewall (TCP ${PORT}) ..."
   ; remove both current and any legacy (8080) rule to avoid stale leftovers
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="${SERVICE}-Web-${PORT}"'
@@ -222,8 +346,9 @@ Section "Install"
 
   ; ---- register Windows service via nssm ----
   DetailPrint "Registering Windows service (${SERVICE}) ..."
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" remove ${SERVICE} confirm'
+  ; Retain existing service identity, environment and credentials on upgrades.
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" install ${SERVICE} "$INSTDIR\CiscoNetworkManager.exe"'
+  nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} Application "$INSTDIR\CiscoNetworkManager.exe"'
   ; Set AppParameters with --data-dir if custom data directory was chosen
   ${If} $DataDir != "$INSTDIR\data"
   ${AndIf} $DataDir != ""
@@ -253,7 +378,10 @@ Section "Install"
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppRotateFiles 1'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppRotateOnline 1'
   nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppRotateBytes 5242880'
-  nsExec::ExecToLog '"$INSTDIR\nssm.exe" start ${SERVICE}'
+  nsExec::ExecToStack '"$INSTDIR\nssm.exe" start ${SERVICE}'
+  Pop $R1
+  Pop $R2
+  !insertmacro Diagnostic "Service start exit=$R1; $R2"
 
   ; Do not claim success until the newly installed version answers its health
   ; endpoint. A migration/import/startup error now triggers binary rollback.
@@ -261,9 +389,10 @@ Section "Install"
   StrCpy $R0 0
   health_loop:
     Sleep 2000
-    nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { if ((Invoke-RestMethod -Uri $\'http://127.0.0.1:${PORT}/health$\' -TimeoutSec 3).version -eq $\'${VER}$\') { exit 0 } } catch {}; exit 1"'
+    nsExec::ExecToStack /TIMEOUT=30000 '"$INSTDIR\CiscoNetworkManager.exe" --service-context --health-check --expected-version ${VER}'
     Pop $R1
     Pop $R2
+    !insertmacro Diagnostic "Health attempt $R0 exit=$R1; $R2"
     ${If} $R1 == "0"
       DetailPrint "Health check passed: v${VER}"
       Goto health_ok
@@ -276,25 +405,41 @@ Section "Install"
 
     DetailPrint "ERROR: new version did not become healthy; rolling back executable"
     nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppExit Default Exit'
-    nsExec::ExecToLog '"$INSTDIR\nssm.exe" stop ${SERVICE}'
-    nsExec::ExecToLog 'taskkill /F /IM CiscoNetworkManager.exe /T'
-    Sleep 2000
+    !insertmacro StopForUpgrade
     ${If} $PreviousExeAvailable == "1"
+      ${If} $RuntimeExisted == "1"
+        CopyFiles /SILENT "$DataDir\managed\runtime.previous.json" "$DataDir\managed\runtime.json"
+      ${Else}
+        Delete "$DataDir\managed\runtime.json"
+      ${EndIf}
+      ClearErrors
       Delete "$INSTDIR\CiscoNetworkManager.exe"
       CopyFiles /SILENT "$INSTDIR\CiscoNetworkManager.previous.exe" "$INSTDIR\CiscoNetworkManager.exe"
+      ${If} ${Errors}
+        !insertmacro Diagnostic "Rollback executable restore failed; previous file retained"
+        MessageBox MB_ICONSTOP "Rollback could not restore the executable. The previous executable and data were retained. See upgrade-diagnostics.log."
+        Abort
+      ${EndIf}
       nsExec::ExecToLog '"$INSTDIR\nssm.exe" set ${SERVICE} AppExit Default Restart'
-      nsExec::ExecToLog '"$INSTDIR\nssm.exe" start ${SERVICE}'
-      MessageBox MB_ICONSTOP "The new version failed to start. The previous executable has been restored and restarted. See $INSTDIR\service.log for details."
+      nsExec::ExecToStack '"$INSTDIR\nssm.exe" start ${SERVICE}'
+      Pop $R1
+      Pop $R2
+      !insertmacro Diagnostic "Rollback restart exit=$R1; $R2"
+      MessageBox MB_ICONSTOP "The new version did not pass its health check. A rollback was attempted. See $INSTDIR\upgrade-diagnostics.log and service.log for details."
     ${Else}
       MessageBox MB_ICONSTOP "The service failed to start. See $INSTDIR\service.log for details."
     ${EndIf}
     Abort
   health_ok:
     Delete "$INSTDIR\CiscoNetworkManager.previous.exe"
+    Delete "$DataDir\managed\runtime.previous.json"
+    nsExec::ExecToStack '"$INSTDIR\CiscoNetworkManager.exe" --service-context --print-url'
+    Pop $R1
+    Pop $R2
 
   ; ---- Start Menu ----
   CreateDirectory "$SMPROGRAMS\${APPNAME}"
-  WriteINIStr "$SMPROGRAMS\${APPNAME}\Manage.url" "InternetShortcut" "URL" "http://localhost:${PORT}"
+  WriteINIStr "$SMPROGRAMS\${APPNAME}\Manage.url" "InternetShortcut" "URL" "$R2"
   CreateShortCut "$SMPROGRAMS\${APPNAME}\Uninstall ${APPNAME}.lnk" "$INSTDIR\uninstall.exe"
 
   ; ---- uninstaller + ARP entry ----
@@ -319,7 +464,7 @@ Section "Install"
   WriteRegStr HKLM "Software\CiscoNetworkManager" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "Software\CiscoNetworkManager" "Version" "${VER}"
 
-  DetailPrint "Installation complete. Open http://localhost:${PORT}"
+  DetailPrint "Installation complete. Open the Start Menu management shortcut."
 SectionEnd
 
 ; ===================== UNINSTALL =====================

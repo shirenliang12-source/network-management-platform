@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>网络拓扑图</h1>
+    <div>
+        <button class="btn btn-primary" onclick="runDiscovery()">🔍 重新发现邻居</button>
+        <a class="btn btn-outline" href="/api/topology/export/drawio">📤 导出 draw.io</a>
+        <a class="btn btn-outline" href="/api/topology/export/graphml">📥 导出GraphML</a>
+    </div>
+</div>
+
+<!-- Topology Stats -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-icon blue">📡</div>
+        <div>
+            <div class="stat-value" id="topo-managed">-</div>
+            <div class="stat-label">管理设备</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon green">🔗</div>
+        <div>
+            <div class="stat-value" id="topo-links">-</div>
+            <div class="stat-label">链路总数 (CDP/LLDP)</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon purple">🌐</div>
+        <div>
+            <div class="stat-value" id="topo-nodes">-</div>
+            <div class="stat-label">拓扑节点总数</div>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon orange">🔍</div>
+        <div>
+            <div class="stat-value" id="topo-discovered">-</div>
+            <div class="stat-label">未管理已发现</div>
+        </div>
+    </div>
+</div>
+<div style="font-size: 12px; color: #888; margin: -8px 0 12px 2px;">
+    说明：拓扑节点总数 = 管理设备 + 未管理已发现设备；链路总数 = 实际发现的物理连接数。点击「重新发现邻居」会<b>递归遍历全网</b>，自动把可连通的新设备加入管理并补全拓扑。
+</div>
+
+<!-- Topology Graph -->
+<div class="card">
+    <div class="card-header">
+        拓扑可视化
+        <div style="font-size: 12px; color: #666;">
+            <span style="display: inline-block; width: 12px; height: 12px; background: #1a73e8; border-radius: 50%; margin-right: 4px;"></span>管理设备
+            <span style="display: inline-block; width: 12px; height: 12px; background: #9c27b0; border-radius: 50%; margin-left: 10px; margin-right: 4px;"></span>已发现设备
+            <span style="display: inline-block; width: 12px; height: 12px; background: #28a745; border-radius: 50%; margin-left: 10px; margin-right: 4px;"></span>在线
+            <span style="display: inline-block; width: 12px; height: 12px; background: #dc3545; border-radius: 50%; margin-left: 10px; margin-right: 4px;"></span>离线
+        </div>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <div id="topology-network"></div>
+    </div>
+</div>
+
+<!-- Neighbor Table -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">邻居关系明细</div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>源设备</th>
+                        <th>本地接口</th>
+                        <th>邻居名称</th>
+                        <th>邻居IP</th>
+                        <th>邻居接口</th>
+                        <th>平台</th>
+                        <th>协议</th>
+                    </tr>
+                </thead>
+                <tbody id="neighborTable">
+                    <tr><td colspan="7" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let network = null;
+
+async function loadTopology() {
+    try {
+        const data = await API.get('/api/topology');
+
+        document.getElementById('topo-managed').textContent = data.nodes.filter(n => n.is_managed).length;
+        document.getElementById('topo-links').textContent = data.total_edges;
+        document.getElementById('topo-nodes').textContent = data.total_nodes;
+        document.getElementById('topo-discovered').textContent = data.nodes.filter(n => !n.is_managed).length;
+
+        // Build vis.js nodes
+        const nodes = data.nodes.map(n => {
+            let color = '#9c27b0'; // Discovered (purple)
+            if (n.is_managed) {
+                if (n.status === 'online') color = '#28a745';
+                else if (n.status === 'offline') color = '#dc3545';
+                else color = '#1a73e8';
+            }
+
+            let shape = 'box';
+            let icon = '📡';
+            if (n.device_type === 'cisco_wlc') icon = '🎛️';
+            else if (n.device_type === 'cisco_ap') icon = '📶';
+            else if (n.device_type === 'cisco_nxos') icon = '🖥️';
+
+            let label = n.label;
+            if (n.ip) label += `\n${n.ip}`;
+            if (n.model) label += `\n${n.model}`;
+            const title = document.createElement('div');
+            title.textContent = `名称: ${n.label}\nIP: ${n.ip || 'N/A'}\n类型: ${n.device_type || 'N/A'}\n状态: ${n.status}\n型号: ${n.model || 'N/A'}\n序列号: ${n.serial_number || 'N/A'}\nOS版本: ${n.os_version || 'N/A'}${n.is_managed ? '' : '\n(未管理设备)'}`;
+
+            return {
+                id: n.id,
+                label: label,
+                color: {
+                    background: color,
+                    border: color,
+                    highlight: { background: color, border: '#333' }
+                },
+                font: { color: 'white', size: 12, face: 'sans-serif' },
+                shape: shape,
+                margin: 10,
+                title: title,
+            };
+        });
+
+        // Build vis.js edges
+        const edges = data.edges.map(e => ({
+            from: e.source,
+            to: e.target,
+            label: e.source_interface ? `${e.source_interface}` : '',
+            font: { size: 9, color: '#666', align: 'middle' },
+            color: { color: '#aaa', highlight: '#1a73e8' },
+            smooth: { type: 'continuous' },
+            arrows: 'to, from',
+        }));
+
+        // Draw network
+        const container = document.getElementById('topology-network');
+        const visData = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
+        const options = {
+            layout: { improvedLayout: true },
+            physics: {
+                stabilization: { iterations: 150 },
+                barnesHut: {
+                    gravitationalConstant: -8000,
+                    springLength: 150,
+                    springConstant: 0.04,
+                    damping: 0.4,
+                },
+            },
+            interaction: {
+                hover: true,
+                tooltipDelay: 200,
+                navigationButtons: true,
+                keyboard: true,
+            },
+            nodes: { shape: 'box', margin: 10 },
+            edges: { smooth: { type: 'continuous' } },
+        };
+
+        if (network) network.destroy();
+        network = new vis.Network(container, visData, options);
+
+    } catch (e) {
+        showToast('加载拓扑失败: ' + e.message, 'error');
+    }
+}
+
+async function loadNeighborTable() {
+    try {
+        const neighbors = await API.get('/api/topology/neighbors');
+        const body = document.getElementById('neighborTable');
+        if (neighbors && neighbors.length > 0) {
+            body.innerHTML = neighbors.map(n => `
+                <tr>
+                    <td>设备 #${n.device_id}</td>
+                    <td>${escapeHtml(n.local_interface || '-')}</td>
+                    <td>${escapeHtml(n.neighbor_name || '-')}</td>
+                    <td>${escapeHtml(n.neighbor_ip || '-')}</td>
+                    <td>${escapeHtml(n.neighbor_interface || '-')}</td>
+                    <td>${escapeHtml(n.neighbor_platform || '-')}</td>
+                    <td><span class="badge badge-info">${escapeHtml((n.protocol || '').toUpperCase())}</span></td>
+                </tr>
+            `).join('');
+        } else {
+            body.innerHTML = '<tr><td colspan="7" class="empty-state">暂无邻居数据，请先执行邻居发现</td></tr>';
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+async function runDiscovery() {
+    if (!confirm('确定要重新执行所有设备的邻居发现吗？')) return;
+    showLoading();
+    try {
+        const result = await API.post('/api/topology/discover');
+        showToast(`发现完成: 成功 ${result.success_count}, 失败 ${result.failed_count}`, result.failed_count > 0 ? 'warning' : 'success');
+        loadTopology();
+        loadNeighborTable();
+    } catch (e) {
+        showToast('发现失败: ' + e.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+loadTopology();
+loadNeighborTable();
+</script>
+{% endblock %}

@@ -44,7 +44,7 @@ RESERVED_META_KEYS = ("_type_labels", "_type_drivers")
 # commands.json under the reserved key "_type_labels". When that key is
 # missing (e.g. commands.json from an older release), we fall back to the
 # hard-coded BUILTIN_DEVICE_TYPE_LABELS dict below.
-BUILTIN_DEVICE_TYPE_KEYS = ("cisco_ios", "cisco_xe", "cisco_nxos", "cisco_wlc_ssh", "fortinet", "cisco_asa", "paloalto_panos")
+BUILTIN_DEVICE_TYPE_KEYS = ("cisco_ios", "cisco_xe", "cisco_nxos", "cisco_wlc_ssh", "fortinet", "cisco_asa", "cisco_ftd", "paloalto_panos")
 
 # Display labels for the built-in types. Acts as the source of truth for the
 # 4 tabs that ship by default; custom types take their labels from
@@ -56,6 +56,14 @@ BUILTIN_DEVICE_TYPE_LABELS = {
     "cisco_wlc_ssh": "Cisco WLC (AireOS)",
     "fortinet": "Fortinet FortiGate",
     "cisco_asa": "Cisco ASA Firewall",
+    "cisco_ftd": "Cisco Firepower FTD（诊断 CLI）",
+    "checkpoint_gaia": "Check Point Gaia（Clish）",
+    "cisco_router": "Cisco 路由器（IOS/IOS-XE）",
+    "cisco_ap": "Cisco AP（自主 IOS）",
+    "cisco_wlc_xe": "Cisco WLC（Catalyst 9800 IOS-XE）",
+    "cisco_ipt": "Cisco IPT / IP Phone（仅登记）",
+    "cisco_cucm": "Cisco CUCM（仅登记，DRS 未接入）",
+    "cisco_ap_lightweight": "Cisco 轻量 AP（仅登记）",
     "paloalto_panos": "Palo Alto PAN-OS",
 }
 
@@ -310,6 +318,9 @@ for _driver, _commands in {
     'cisco_asa': {'running_config': 'show running-config', 'show_version': 'show version',
                   'show_inventory': 'show inventory', 'show_interfaces': 'show interface ip brief',
                   'show_cpu': 'show cpu usage', 'show_memory': 'show memory'},
+    'cisco_ftd': {'running_config': 'show running-config', 'show_version': 'show version',
+                  'show_inventory': 'show inventory', 'show_interfaces': 'show interface ip brief',
+                  'show_cpu': 'show cpu usage', 'show_memory': 'show memory'},
     'paloalto_panos': {'running_config': 'show config running', 'show_version': 'show system info',
                        'show_interfaces': 'show interface all', 'show_cpu': 'show system resources',
                        'show_memory': 'show system resources'},
@@ -318,6 +329,21 @@ for _driver, _commands in {
                                  for key, value in DEFAULT_COMMANDS['cisco_ios'].items()}
 
 # Human-readable labels for command keys
+for _key, _base in {'cisco_router': 'cisco_ios', 'cisco_ap': 'cisco_ios', 'cisco_wlc_xe': 'cisco_xe'}.items():
+    DEFAULT_COMMANDS[_key] = json.loads(json.dumps(DEFAULT_COMMANDS[_base]))
+DEFAULT_COMMANDS['checkpoint_gaia'] = {
+    key: {'command': {'running_config': 'show configuration', 'show_version': 'show version all',
+                     'show_interfaces': 'show interfaces all'}.get(key, ''),
+          'description': value['description'], 'delay_factor': 2.0}
+    for key, value in DEFAULT_COMMANDS['cisco_ios'].items()
+}
+DEFAULT_COMMANDS['fortinet']['lldp_neighbors']['command'] = 'diagnose lldprx neighbor details'
+DEFAULT_COMMANDS['paloalto_panos']['lldp_neighbors']['command'] = 'show lldp neighbors all'
+BUILTIN_DEVICE_TYPE_KEYS = tuple(BUILTIN_DEVICE_TYPE_LABELS)
+INVENTORY_ONLY_TYPES = {'cisco_ipt', 'cisco_cucm', 'cisco_ap_lightweight'}
+for _key in INVENTORY_ONLY_TYPES:
+    DEFAULT_COMMANDS[_key] = {key: {**value, 'command': ''} for key, value in DEFAULT_COMMANDS['cisco_ios'].items()}
+
 COMMAND_LABELS = {
     "running_config": "运行配置备份",
     "cdp_neighbors": "CDP邻居发现",
@@ -583,11 +609,14 @@ def list_device_types() -> list:
 
 def resolve_device_driver(type_key: str) -> str:
     """Display/command types are not necessarily Netmiko driver names."""
-    aliases = {"cisco_ios_xe": "cisco_xe", "cisco_wlc": "cisco_wlc_ssh", "cisco_ap": "cisco_ios"}
+    aliases = {"cisco_ios_xe": "cisco_xe", "cisco_wlc": "cisco_wlc_ssh", "cisco_ap": "cisco_ios",
+               "cisco_router": "cisco_ios", "cisco_wlc_xe": "cisco_xe"}
     data = _load_raw()
     driver = data.get("_type_drivers", {}).get(type_key)
     if driver:
         return aliases.get(driver, driver)
+    if type_key in INVENTORY_ONLY_TYPES:
+        return 'inventory_only'
     from netmiko.ssh_dispatcher import CLASS_MAPPER
     resolved = aliases.get(type_key, type_key)
     if resolved in CLASS_MAPPER:
@@ -596,7 +625,7 @@ def resolve_device_driver(type_key: str) -> str:
     if type_key in data and isinstance(data[type_key], dict):
         for key in BUILTIN_DEVICE_TYPE_KEYS:
             if data[type_key] == DEFAULT_COMMANDS[key]:
-                return key
+                return aliases.get(key, 'inventory_only' if key in INVENTORY_ONLY_TYPES else key)
         return "cisco_ios"
     raise ValueError(f"设备类型 {type_key} 未配置连接驱动，请在设置中维护设备类型")
 
@@ -605,7 +634,7 @@ def set_device_driver(type_key: str, driver: str):
     from netmiko.ssh_dispatcher import CLASS_MAPPER
     if type_key not in load_commands():
         raise ValueError("设备类型不存在")
-    if driver not in CLASS_MAPPER or "telnet" in driver:
+    if (driver not in CLASS_MAPPER and driver != 'inventory_only') or "telnet" in driver:
         raise ValueError("请选择有效的 SSH 连接驱动")
     data = _load_raw()
     data.setdefault("_type_drivers", {})[type_key] = driver
@@ -678,7 +707,7 @@ def get_command_with_fallbacks(device_type: str, command_key: str) -> list:
     on the device) and we want to try alternative commands automatically.
     """
     primary = get_command(device_type, command_key)
-    if resolve_device_driver(device_type) in {'fortinet', 'cisco_asa', 'paloalto_panos'}:
+    if resolve_device_driver(device_type) in {'fortinet', 'cisco_asa', 'cisco_ftd', 'paloalto_panos', 'checkpoint_gaia', 'inventory_only'}:
         return [primary] if primary else []
     fallbacks = [c for c in COMMAND_FALLBACKS.get(command_key, []) if c != primary]
     return [primary] + fallbacks

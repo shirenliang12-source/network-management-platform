@@ -47,9 +47,15 @@ class SSHService:
         so traffic goes out through the selected network interface.
         """
         self._last_error = ""
+        self._error_stage = "authentication"
+        sock = None
         try:
             from app.services.command_config import resolve_device_driver
             self.device_type = resolve_device_driver(self.device.device_type)
+            if self.device_type == 'inventory_only':
+                self._error_stage = 'capability'
+                self._last_error = '此类型当前仅支持资产登记，不支持通用 SSH 采集/备份；CUCM 请使用 DRS，轻量 AP/电话请使用对应管理系统'
+                return False
             params = {
                 "device_type": self.device_type,
                 "host": self.device.ip_address,
@@ -58,6 +64,8 @@ class SSHService:
                 "port": self.device.port,
                 "timeout": settings.SSH_TIMEOUT,
                 "global_delay_factor": settings.SSH_GLOBAL_DELAY,
+                "use_keys": False,
+                "allow_agent": False,
             }
 
             enable_pwd = self.device.get_enable_password()
@@ -82,35 +90,75 @@ class SSHService:
                     msg = f"Source IP {source_ip}: TCP connect timeout to {self.device.ip_address}:{self.device.port}"
                     logger.error(msg)
                     self._last_error = msg
-                    self.device.status = "offline"
+                    if sock is not None:
+                        sock.close()
+                    self._error_stage = "source_connection"
                     return False
                 except OSError as bind_err:
                     msg = f"Source IP {source_ip} bind failed: {bind_err}"
                     logger.error(msg)
                     self._last_error = msg
-                    self.device.status = "offline"
+                    if sock is not None:
+                        sock.close()
+                    self._error_stage = "source_connection"
                     return False
 
-            self.connection = ConnectHandler(**params)
+            if self.device_type in {"cisco_asa", "cisco_ftd"}:
+                # Separate SSH authentication from CLI permissions. Never run
+                # the ASA driver's implicit login retry / configuration changes.
+                params.update(auto_connect=False, allow_auto_change=False)
+                if self.device_type == "cisco_ftd":
+                    params["secret"] = ""  # Diagnostic CLI uses an empty enable password.
+                self.connection = ConnectHandler(**params)
+                self.connection.establish_connection()
+                self._error_stage = "session"
+                if self.device_type == "cisco_ftd":
+                    self.connection.session_preparation()
+                else:
+                    self.connection._test_channel_read(pattern=r"[>#]")
+                    self.connection.set_base_prompt()
+                self._error_stage = "privilege"
+                self.connection.enable()
+                if not self.connection.check_enable_mode():
+                    raise ValueError("Privileged CLI not available")
+                self._error_stage = "session"
+                self.connection.global_cmd_verify = False
+                self.connection.disable_paging(command="terminal pager 0")
+                self.connection.set_base_prompt()
+            else:
+                self.connection = ConnectHandler(**params)
+            self._error_stage = ""
             return True
         except NetmikoTimeoutException as e:
-            msg = f"SSH timeout to {self.device.ip_address}: {e}"
-            logger.error(msg)
-            self._last_error = msg
-            self.device.status = "offline"
+            self._record_connection_failure(e)
             return False
         except NetmikoAuthenticationException as e:
-            msg = f"SSH auth failed for {self.device.ip_address}: {e}"
-            logger.error(msg)
-            self._last_error = msg
-            self.device.status = "offline"
+            self._record_connection_failure(e)
             return False
         except Exception as e:
-            msg = f"SSH connection error to {self.device.ip_address}: {e}"
-            logger.error(msg)
-            self._last_error = msg
-            self.device.status = "offline"
+            self._record_connection_failure(e)
             return False
+        finally:
+            if self._last_error:
+                self.disconnect()
+                if sock is not None:
+                    sock.close()
+
+    def _record_connection_failure(self, error):
+        # Do not expose raw channel output or passwords in API errors/logs.
+        hints = {
+            "authentication": "SSH 建连/认证失败：请核对管理地址、端口、登录账号密码及 SSH 认证策略",
+            "privilege": ("SSH 已登录，但 FTD 诊断 CLI/提权失败：需要允许 system support diagnostic-cli 的账号"
+                          if self.device_type == "cisco_ftd" else
+                          "SSH 已登录，但 ASA Enable 提权失败：请维护 Enable 密码；留空仅尝试空密码，不重试登录密码"),
+            "session": "SSH 已登录，但 CLI 初始化失败：请核对设备类型、提示符和命令权限（不支持 FXOS）",
+        }
+        self._last_error = f"{hints.get(self._error_stage, 'SSH 连接失败')} [{type(error).__name__}]"
+        logger.warning("SSH %s: %s", self.device.ip_address, self._last_error)
+
+    @property
+    def error_stage(self) -> str:
+        return getattr(self, "_error_stage", "")
 
     @property
     def last_error(self) -> str:
@@ -129,6 +177,7 @@ class SSHService:
 
     def send_command(self, command: str, delay_factor: float = 1.0) -> str:
         """Send a command and return the output."""
+        self._last_error = ""
         if not command or not command.strip():
             return ''
         if not self.connection:
@@ -140,9 +189,15 @@ class SSHService:
                 delay_factor=delay_factor,
                 read_timeout=settings.SSH_TIMEOUT + 10,
             )
+            if re.search(r'(?im)^\s*(?:%\s*(?:invalid|error|authorization|unknown|incomplete)|'
+                         r'command (?:parse error|fail)|unknown command|invalid (?:command|syntax)|'
+                         r'syntax error|permission denied|not authorized|access denied)', output):
+                self._last_error = "设备拒绝采集命令：请检查命令模板、系统版本和账号权限"
+                return ""
             return output
         except Exception as e:
-            logger.error(f"Command error on {self.device.ip_address}: {command} -> {e}")
+            self._last_error = f"采集命令执行失败 [{type(e).__name__}]；请检查权限、模板或超时设置"
+            logger.warning("Command failed on %s: %s", self.device.ip_address, type(e).__name__)
             return ""
 
     def send_config_set(self, commands: list) -> str:
@@ -173,7 +228,37 @@ class SSHService:
         """Get LLDP neighbor details (configurable command)."""
         cmd = get_command(self.device.device_type, "lldp_neighbors")
         delay = get_command_delay(self.device.device_type, "lldp_neighbors")
-        return self.send_command(cmd, delay_factor=delay)
+        if self.device_type == 'checkpoint_gaia' and cmd.strip() == 'lldpneighbors':
+            if not self.connection and not self.connect():
+                return ''
+            # Expert access is opt-in via the explicitly configured command and
+            # separately maintained secret; never guess the SSH login password.
+            entered = False
+            try:
+                if not self.connection.check_enable_mode():
+                    if not self.device.get_enable_password():
+                        self._last_error = 'Check Point LLDP 需要 Expert 权限，请在 Enable 密码栏维护独立 Expert 密码'
+                        return ''
+                    self.connection.enable()
+                    entered = True
+                return self.send_command(cmd, delay_factor=delay)
+            except Exception as exc:
+                self._last_error = f'Check Point Expert/LLDP 读取失败 [{type(exc).__name__}]'
+                return ''
+            finally:
+                if entered:
+                    try:
+                        self.connection.exit_enable_mode()
+                    except Exception:
+                        self._last_error = 'Check Point 无法退出 Expert，已关闭会话；历史邻居不更新'
+                        self.disconnect()
+        output = self.send_command(cmd, delay_factor=delay)
+        # Only the known legacy default gets a read-only syntax fallback.
+        # Do not replace administrator-customized commands or retry credentials.
+        if (self.device_type == 'fortinet' and cmd == 'diagnose lldprx neighbor details'
+                and self.last_error.startswith('设备拒绝采集命令')):
+            return self.send_command('diagnose lldp rx neighbor details', delay_factor=delay)
+        return output
 
     def get_version(self) -> str:
         """Get device version info (configurable command)."""
@@ -334,7 +419,13 @@ def parse_cdp_neighbors(raw_output: str) -> list:
 
 
 def parse_lldp_neighbors(raw_output: str) -> list:
-    """Parse 'show lldp neighbors detail' output."""
+    """Parse supported LLDP detail formats without treating unknown text as peers."""
+    from app.services.lldp_parser import parse_details
+    return parse_details(raw_output or '')
+
+
+def _legacy_parse_lldp_neighbors(raw_output: str) -> list:
+    """Legacy decoder retained for reference; not used by discovery."""
     neighbors = []
     if not raw_output:
         return neighbors

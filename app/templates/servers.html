@@ -4,6 +4,10 @@
     <h1>🖥️ 服务器存储</h1>
     <div>
         <button class="btn btn-outline" onclick="showCategoryManage()">⚙ 管理类别</button>
+        <a class="btn btn-outline" href="/api/assets/servers/export">导出全部 CSV</a>
+        <a class="btn btn-outline" href="/api/assets/servers/export?template=true">下载导入模板</a>
+        <button class="btn btn-outline" onclick="document.getElementById('serverCSVFile').click()">导入 CSV</button>
+        <input id="serverCSVFile" type="file" accept=".csv" hidden onchange="importServerCSV(this)">
         <button class="btn btn-primary" onclick="showAddServerModal()">＋ 新增服务器/存储</button>
     </div>
 </div>
@@ -54,13 +58,14 @@
                         <th>品牌 / 型号</th>
                         <th>机柜</th>
                         <th>站点</th>
+                        <th>IP 地址</th>
                         <th>U 位</th>
                         <th>状态</th>
                         <th style="min-width: 130px;">操作</th>
                     </tr>
                 </thead>
                 <tbody id="serverBody">
-                    <tr><td colspan="8" class="empty-state">加载中...</td></tr>
+                    <tr><td colspan="9" class="empty-state">加载中...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -83,6 +88,17 @@
 <script src="/static/js/rack_view.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/asset_relations.js?v={{APP_VERSION}}"></script>
 <script>
+async function importServerCSV(input) {
+    const file = input.files[0]; if (!file) return;
+    try {
+        if (file.size > 10000000) throw new Error('文件不能超过 10MB');
+        if (!confirm('导入服务器/存储：必填 name、site、rack；additional_ips 使用 JSON 数组。仅新增，重复跳过，不覆盖；错误整批取消。继续？')) return;
+        const csv = new TextDecoder('utf-8', {fatal:true}).decode(await file.arrayBuffer());
+        const result = await API.post('/api/assets/servers/import', {csv});
+        showToast(result.message, 'success'); showImportDuplicates(result); loadServers();
+    } catch (error) { showToast(error.message, 'error'); }
+    finally { input.value = ''; }
+}
 const SERVER_CATEGORIES_FALLBACK = ["服务器", "存储"];
 let SERVER_CATEGORIES = SERVER_CATEGORIES_FALLBACK.slice();
 let CATEGORY_COLORS = {};
@@ -234,7 +250,7 @@ async function loadServers() {
         const items = await API.get('/api/assets/servers?' + params.toString());
         const body = document.getElementById('serverBody');
         if (items.length === 0) {
-            body.innerHTML = '<tr><td colspan="8" class="empty-state">🖥️ 暂无服务器/存储，点击右上角「新增」录入</td></tr>';
+            body.innerHTML = '<tr><td colspan="9" class="empty-state">🖥️ 暂无服务器/存储，点击右上角「新增」录入</td></tr>';
             return;
         }
         body.innerHTML = items.map(s => `
@@ -249,7 +265,7 @@ async function loadServers() {
                 <td>${assetStatusBadge(s.status)}</td>
                 <td>
                     <button class="btn btn-sm btn-outline" onclick="editServer(${s.id})">编辑</button>
-                    <button class="btn btn-sm btn-outline" onclick="showAssetRelations('server',${s.id})">虚拟机 / 机柜反查</button>
+                    <button class="btn btn-sm btn-outline" onclick="showAssetRelations('server',${s.id})">IP / 虚拟机 / 机柜反查</button>
                     <button class="btn btn-sm btn-danger" onclick="deleteServer(${s.id})">删除</button>
                 </td>
             </tr>`).join('');

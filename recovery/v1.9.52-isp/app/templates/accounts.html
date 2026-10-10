@@ -1,0 +1,292 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>🔑 账号密码管理</h1>
+    <div>
+        <button class="btn btn-primary" onclick="showAddAccountModal()">＋ 新增账号</button>
+    </div>
+</div>
+
+<!-- Summary stats -->
+<div class="stats-grid" id="accStatsGrid" style="grid-template-columns: repeat(4, 1fr);">
+    <div class="stat-card">
+        <div class="stat-icon blue">🔑</div>
+        <div><div class="stat-value" id="acc-total">-</div><div class="stat-label">账号总数</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon indigo">🖥️</div>
+        <div><div class="stat-value" id="acc-device">-</div><div class="stat-label">网络设备类</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon green">🏢</div>
+        <div><div class="stat-value" id="acc-ad">-</div><div class="stat-label">AD 同步账号</div></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon orange">🗝️</div>
+        <div><div class="stat-value" id="acc-nopw">-</div><div class="stat-label">AD 托管(无本地密码)</div></div>
+    </div>
+</div>
+
+<!-- Filters + table -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        🔑 账号列表
+        <span style="font-size: 13px; font-weight: normal;">
+            <select class="form-control" id="filterCat" onchange="loadAccounts()" style="display:inline-block;width:auto;">
+                <option value="">全部分类</option>
+                <option value="网络设备">网络设备</option>
+                <option value="服务器">服务器</option>
+                <option value="数据库">数据库</option>
+                <option value="应用系统">应用系统</option>
+                <option value="AD用户">AD用户</option>
+                <option value="其他">其他</option>
+            </select>
+            <input type="text" class="form-control" id="filterSearch" placeholder="搜索名称/账号/地址..." oninput="loadAccounts()" style="display:inline-block;width:auto;min-width:220px;">
+        </span>
+    </div>
+    <div class="card-body">
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>名称</th>
+                        <th>账号</th>
+                        <th>分类</th>
+                        <th>来源</th>
+                        <th>管理地址/IP</th>
+                        <th>关联设备</th>
+                        <th>邮箱</th>
+                        <th style="min-width: 180px;">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="accBody">
+                    <tr><td colspan="8" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ACC_CATS = ["网络设备", "服务器", "数据库", "应用系统", "AD用户", "其他"];
+
+let DEVICES = [];
+
+function accCatBadge(c) {
+    const map = {
+        '网络设备': '<span class="badge badge-info">网络设备</span>',
+        '服务器': '<span class="badge badge-success">服务器</span>',
+        '数据库': '<span class="badge badge-warning">数据库</span>',
+        '应用系统': '<span class="badge badge-primary">应用系统</span>',
+        'AD用户': '<span class="badge badge-secondary">AD用户</span>',
+        '其他': '<span class="badge badge-secondary">其他</span>',
+    };
+    return map[c] || `<span class="badge badge-secondary">${escapeHtml(c||'其他')}</span>`;
+}
+
+function accSourceBadge(s) {
+    if (s === 'AD同步') return '<span class="badge badge-secondary">🔄 AD同步</span>';
+    return '<span class="badge badge-success">✏️ 手动</span>';
+}
+
+async function loadDevices() {
+    try { DEVICES = await API.get('/api/devices'); } catch (e) { console.error(e); }
+}
+
+async function loadSummary() {
+    try {
+        const items = await API.get('/api/accounts');
+        document.getElementById('acc-total').textContent = items.length;
+        document.getElementById('acc-device').textContent = items.filter(i => ['网络设备','服务器'].includes(i.category)).length;
+        document.getElementById('acc-ad').textContent = items.filter(i => i.source === 'AD同步').length;
+        document.getElementById('acc-nopw').textContent = items.filter(i => i.ad_managed).length;
+    } catch (e) { console.error(e); }
+}
+
+async function loadAccounts() {
+    try {
+        const params = new URLSearchParams();
+        const cat = document.getElementById('filterCat').value;
+        const search = document.getElementById('filterSearch').value.trim();
+        if (cat) params.set('category', cat);
+        if (search) params.set('search', search);
+        const items = await API.get('/api/accounts?' + params.toString());
+        const body = document.getElementById('accBody');
+        if (items.length === 0) {
+            body.innerHTML = '<tr><td colspan="8" class="empty-state">🔑 暂无账号，点击右上角「新增账号」录入，或在「设置 → AD/LDAP 集成」中从 AD 同步</td></tr>';
+            return;
+        }
+        body.innerHTML = items.map(a => `
+            <tr>
+                <td><strong>${escapeHtml(a.name)}</strong>${a.notes ? '<div style="color:#888;font-size:11px;">'+escapeHtml(a.notes)+'</div>' : ''}</td>
+                <td><code>${escapeHtml(a.username||'-')}</code></td>
+                <td>${accCatBadge(a.category)}</td>
+                <td>${accSourceBadge(a.source)}</td>
+                <td><code>${escapeHtml(a.address||'-')}</code></td>
+                <td>${a.linked_device_name ? '🔗 '+escapeHtml(a.linked_device_name) : '<span style="color:#aaa;">—</span>'}</td>
+                <td>${a.email ? escapeHtml(a.email) : '<span style="color:#aaa;">—</span>'}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline" onclick="revealAccount(${a.id})">👁️ 显示</button>
+                    <button class="btn btn-sm btn-outline" onclick="editAccount(${a.id})">编辑</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteAccount(${a.id})">删除</button>
+                </td>
+            </tr>`).join('');
+    } catch (e) {
+        showToast('加载账号失败: ' + e.message, 'error');
+    }
+}
+
+// 显示/复制密码（临时解密）
+async function revealAccount(id) {
+    try {
+        const r = await API.post('/api/accounts/' + id + '/reveal');
+        if (r.ad_managed) {
+            showToast('该账号由 AD 管理，本地不保存密码；可在「设置→AD/LDAP 集成」做登录校验', 'info');
+            return;
+        }
+        const pw = r.password || '(空)';
+        const modal = `
+            <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+                <div class="modal" style="max-width:520px;">
+                    <div class="modal-header"><h3>🔑 账号密码</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+                    <div class="modal-body">
+                        <div class="form-group"><label>密码（点击可复制）</label>
+                            <div style="display:flex;gap:8px;align-items:center;">
+                                <code id="revealPw" style="flex:1;padding:8px 10px;background:#f8f9fa;border-radius:6px;font-size:14px;word-break:break-all;">${escapeHtml(pw)}</code>
+                                <button class="btn btn-sm btn-primary" onclick="copyText(document.getElementById('revealPw').textContent)">复制</button>
+                            </div>
+                        </div>
+                        <div style="font-size:12px;color:#888;">为安全起见，关闭弹窗后请及时清理剪贴板记录。</div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+                    </div>
+                </div>
+            </div>`;
+        document.getElementById('modalContainer').innerHTML = modal;
+    } catch (e) {
+        showToast('读取失败: ' + e.message, 'error');
+    }
+}
+
+function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => showToast('已复制到剪贴板', 'success'))
+            .catch(() => fallbackCopy(text));
+    } else {
+        fallbackCopy(text);
+    }
+}
+function fallbackCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); showToast('已复制到剪贴板', 'success'); }
+    catch (e) { showToast('复制失败，请手动选择', 'error'); }
+    document.body.removeChild(ta);
+}
+
+// ---------- Account modal ----------
+function accountModalHTML(title, a) {
+    a = a || {};
+    const devOpts = '<option value="">（不关联）</option>' + DEVICES.map(d => `<option value="${d.id}" ${a.linked_device_id===d.id?'selected':''}>${escapeHtml(d.name)} (${escapeHtml(d.ip_address||'')})</option>`).join('');
+    const catOpts = ACC_CATS.map(x => `<option value="${x}" ${(a.category||'其他')===x?'selected':''}>${x}</option>`).join('');
+    const readOnly = (a.source === 'AD同步') ? 'readonly style="background:#f1f5f9;color:#888;"' : '';
+    const pwNote = (a.source === 'AD同步') ? '<div style="font-size:11px;color:#999;margin-top:2px;">AD 同步账号的密码由 AD 管理，本地不可修改</div>' : '';
+    return `
+        <div class="modal-overlay active" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal" style="max-width:640px;"><div class="modal-header"><h3>${title}</h3><button class="btn btn-sm btn-outline" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+            <div class="modal-body">
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1.2;"><label>名称 / 用途 *</label><input type="text" class="form-control" id="acc-name" value="${escapeHtml(a.name||'')}" placeholder="如 核心交换机管理员 / 堡垒机账号"></div>
+                    <div class="form-group" style="flex:1;"><label>分类</label><select class="form-control" id="acc-cat">${catOpts}</select></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>登录账号</label><input type="text" class="form-control" id="acc-user" value="${escapeHtml(a.username||'')}" ${readOnly}></div>
+                    <div class="form-group" style="flex:1;"><label>密码 ${a.source==='AD同步'?'（AD托管）':'（留空=不保存）'}</label><input type="password" class="form-control" id="acc-pw" ${readOnly}>${pwNote}</div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1.4;"><label>管理地址 / IP / URL</label><input type="text" class="form-control" id="acc-addr" value="${escapeHtml(a.address||'')}" placeholder="如 10.1.1.1 / https://wiki.xxx"></div>
+                    <div class="form-group" style="flex:1;"><label>关联设备</label><select class="form-control" id="acc-dev">${devOpts}</select></div>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <div class="form-group" style="flex:1;"><label>邮箱</label><input type="text" class="form-control" id="acc-email" value="${escapeHtml(a.email||'')}"></div>
+                </div>
+                <div class="form-group"><label>备注</label><textarea class="form-control" id="acc-notes" rows="2">${escapeHtml(a.notes||'')}</textarea></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+                <button class="btn btn-primary" onclick="${a.id ? 'submitEditAccount('+a.id+')' : 'submitAddAccount()'}">保存</button>
+            </div></div></div>`;
+}
+
+function showAddAccountModal() {
+    document.getElementById('modalContainer').innerHTML = accountModalHTML('新增账号', {});
+}
+
+function collectAccount() {
+    const dev = document.getElementById('acc-dev').value;
+    return {
+        name: document.getElementById('acc-name').value.trim(),
+        username: document.getElementById('acc-user').value.trim(),
+        password: document.getElementById('acc-pw').value,
+        category: document.getElementById('acc-cat').value,
+        address: document.getElementById('acc-addr').value.trim(),
+        linked_device_id: dev ? parseInt(dev, 10) : null,
+        email: document.getElementById('acc-email').value.trim(),
+        notes: document.getElementById('acc-notes').value.trim(),
+    };
+}
+
+async function submitAddAccount() {
+    const data = collectAccount();
+    if (!data.name) { showToast('请填写名称', 'warning'); return; }
+    try {
+        await API.post('/api/accounts', data);
+        showToast('已新增账号', 'success');
+        document.querySelector('.modal-overlay').remove();
+        ['filterCat', 'filterSearch'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+        loadAccounts();
+        loadSummary();
+    } catch (e) { showToast('新增失败: ' + e.message, 'error'); }
+}
+
+async function editAccount(id) {
+    try {
+        const a = await API.get('/api/accounts/' + id);
+        document.getElementById('modalContainer').innerHTML = accountModalHTML('编辑账号', a);
+    } catch (e) { showToast('加载失败: ' + e.message, 'error'); }
+}
+
+async function submitEditAccount(id) {
+    const data = collectAccount();
+    // AD 同步账号不允许改账号/密码
+    const cur = await API.get('/api/accounts/' + id).catch(() => null);
+    if (cur && cur.source === 'AD同步') {
+        delete data.username; delete data.password;
+    }
+    try {
+        await API.put('/api/accounts/' + id, data);
+        showToast('已保存', 'success');
+        document.querySelector('.modal-overlay').remove();
+        loadAccounts();
+        loadSummary();
+    } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+}
+
+async function deleteAccount(id) {
+    if (!confirm('确定删除该账号？')) return;
+    try {
+        await API.delete('/api/accounts/' + id);
+        showToast('已删除', 'success');
+        loadAccounts();
+        loadSummary();
+    } catch (e) { showToast('删除失败: ' + e.message, 'error'); }
+}
+
+loadDevices();
+loadAccounts();
+loadSummary();
+</script>
+{% endblock %}

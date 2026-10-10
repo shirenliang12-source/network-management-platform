@@ -38,6 +38,13 @@ class FixTests(unittest.TestCase):
     def post_csv(self,kind,text):
         return self.client.post(f'/api/ipam/{kind}/import',json={'csv':text})
 
+    def test_all_export_endpoints(self):
+        for level in ('aggregates', 'prefixes', 'ips'):
+            response = self.client.get('/api/ipam/export/' + level)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIn('attachment', response.headers['content-disposition'])
+            self.assertTrue(response.content.decode('utf-8-sig').strip())
+
     def test_large_import_and_canonical_duplicate(self):
         csv='网段,描述\n'+'\n'.join(f'10.0.{i}.7/24,'+'长描述'*30 for i in range(100))
         self.assertGreater(len(csv),4000)

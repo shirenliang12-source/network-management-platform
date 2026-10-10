@@ -1,0 +1,15 @@
+FROM python:3.12-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app ./app
+COPY migrations ./migrations
+COPY run.py alembic.ini ./
+RUN groupadd --system netmgr && useradd --system --gid netmgr netmgr && mkdir -p /data && chown netmgr:netmgr /data
+USER netmgr
+ENV CISCO_NM_DATA_DIR=/data
+VOLUME ["/data"]
+EXPOSE 9632
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9632/health',timeout=4)"
+CMD ["python", "run.py", "--host", "0.0.0.0", "--port", "9632", "--data-dir", "/data"]

@@ -73,9 +73,19 @@ function hideLoading() {
     document.getElementById('loadingOverlay').classList.remove('active');
 }
 
+// Database timestamp fields are UTC even when legacy JSON omits the suffix.
+function parsePlatformTime(dt) {
+    if (typeof dt === 'string' && /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(dt)) {
+        dt = dt.replace(' ', 'T');
+        if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(dt)) dt += 'Z';
+    }
+    return new Date(dt);
+}
+
 function formatDateTime(dt) {
     if (!dt) return '-';
-    const d = new Date(dt);
+    const d = parsePlatformTime(dt);
+    if (Number.isNaN(d.getTime())) return '-';
     return d.toLocaleString('zh-CN', {
         year: 'numeric', month: '2-digit', day: '2-digit',
         hour: '2-digit', minute: '2-digit'
@@ -84,9 +94,16 @@ function formatDateTime(dt) {
 
 function formatRelative(dt) {
     if (!dt) return '从未';
-    const d = new Date(dt);
+    const d = parsePlatformTime(dt);
+    if (Number.isNaN(d.getTime())) return '-';
     const now = new Date();
     const diff = now - d;
+    if (diff < 0) {
+        const minutesUntil = Math.ceil(-diff / 60000);
+        if (minutesUntil >= 1440) return `${Math.ceil(minutesUntil / 1440)}天后`;
+        if (minutesUntil >= 60) return `${Math.ceil(minutesUntil / 60)}小时后`;
+        return `${minutesUntil}分钟后`;
+    }
     const minutes = Math.floor(diff / 60000);
     const hours = Math.floor(diff / 3600000);
     const days = Math.floor(diff / 86400000);

@@ -1,0 +1,87 @@
+<!-- Network Interfaces -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        网卡列表
+        <button class="btn btn-sm btn-outline" onclick="loadNICs()">🔄 刷新</button>
+    </div>
+    <div class="card-body">
+        <div style="margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 6px; font-size: 13px; color: #666;">
+            以下为本机检测到的所有网络接口。可将一块在线网卡设为平台默认出口；新增设备、凭据配置和未单独指定网卡的 Zabbix 连接将自动采用它。
+            <button class="btn btn-sm btn-outline" style="margin-left:10px;" onclick="saveDefaultNIC('')">使用系统自动路由</button>
+        </div>
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>网卡名称</th>
+                        <th>IP地址</th>
+                        <th>状态</th>
+                        <th>类型</th>
+                        <th>默认出口</th>
+                    </tr>
+                </thead>
+                <tbody id="nicTable">
+                    <tr><td colspan="5" class="empty-state">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Serial Number Decoder -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">Cisco 序列号查询</div>
+    <div class="card-body">
+        <div class="search-bar">
+            <input type="text" class="form-control" id="serialInput" placeholder="输入Cisco序列号，如 FOC1234X5YZ" style="max-width: 300px;">
+            <button class="btn btn-primary" onclick="decodeSerial()">查询</button>
+        </div>
+        <div id="serialResult" style="margin-top: 15px;"></div>
+    </div>
+</div>
+
+<!-- Command Configuration -->
+<div class="card" style="margin-top: 20px;">
+    <div class="card-header">
+        采集命令配置
+        <div style="display: inline-flex; gap: 6px; float: right;">
+            <button class="btn btn-sm btn-outline" onclick="resetAllCommands()">↩ 重置全部</button>
+        </div>
+    </div>
+    <div class="card-body">
+        <div style="margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 6px; font-size: 13px; color: #666;">
+            在此页面可以自定义各设备类型的数据采集命令。修改后立即生效，无需重启。<br>
+            <strong>注意：</strong>命令修改会影响所有该类型设备的采集操作，请确保命令语法正确。
+        </div>
+        <!-- Device type tabs (each tab is editable; built-ins cannot be deleted, custom ones can) -->
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 15px; flex-wrap: wrap;">
+            <div class="cmd-tabs" id="cmdTabs" style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <span class="empty-state">加载中...</span>
+            </div>
+            <button class="btn btn-sm btn-outline" onclick="addDeviceType()" title="新增设备类型分组">➕ 新增类型</button>
+        </div>
+        <!-- Command editor -->
+        <div id="cmdEditor" style="display:none;">
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 160px;">命令标识 (Key)</th>
+                            <th style="width: 150px;">命令名称</th>
+                            <th>SSH命令</th>
+                            <th style="width: 100px;">延迟系数</th>
+                            <th style="width: 80px;">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cmdTable">
+                    </tbody>
+                </table>
+            </div>
+            <div style="margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap;">
+                <button class="btn btn-sm btn-primary" onclick="saveCurrentCommands()">💾 保存当前设备类型</button>
+                <button class="btn btn-sm btn-outline" onclick="addCommandRow()">➕ 添加命令</button>
+                <button class="btn btn-sm btn-outline" onclick="resetCurrentDeviceType()">↩ 重置当前类型</button>
+            </div>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>配置变更中心</h1>
+        <p style="margin:6px 0 0;color:#667085;">识别配置漂移，确认预期变更，并维护每台设备的配置基线。</p>
+    </div>
+    <a class="btn btn-outline" href="/backups" style="text-decoration:none;">返回配置备份</a>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card"><div class="stat-icon orange">⏳</div><div><div class="stat-value" id="change-pending">-</div><div class="stat-label">待确认</div></div></div>
+    <div class="stat-card"><div class="stat-icon green">✓</div><div><div class="stat-value" id="change-expected">-</div><div class="stat-label">预期变更</div></div></div>
+    <div class="stat-card"><div class="stat-icon red">!</div><div><div class="stat-value" id="change-unexpected">-</div><div class="stat-label">异常变更</div></div></div>
+    <div class="stat-card"><div class="stat-icon blue">≋</div><div><div class="stat-value" id="change-ignored">-</div><div class="stat-label">已忽略</div></div></div>
+    <div class="stat-card"><div class="stat-icon purple">↯</div><div><div class="stat-value" id="change-drifted">-</div><div class="stat-label">偏离基线设备</div></div></div>
+</div>
+
+<div class="card">
+    <div class="card-header">配置变化记录</div>
+    <div class="card-body">
+        <div class="search-bar" style="flex-wrap:wrap;">
+            <select class="form-control" id="change-device" style="max-width:260px;"><option value="">全部设备</option></select>
+            <select class="form-control" id="change-status" style="max-width:180px;">
+                <option value="">全部状态</option>
+                <option value="pending">待确认</option>
+                <option value="expected">预期变更</option>
+                <option value="unexpected">异常变更</option>
+                <option value="ignored">已忽略</option>
+            </select>
+            <button class="btn btn-primary" id="change-filter">查询</button>
+            <button class="btn btn-outline" id="change-refresh">刷新</button>
+        </div>
+        <div class="table-container">
+            <table class="data-table">
+                <thead><tr>
+                    <th>设备</th><th>变更时间</th><th>处理状态</th><th>基线状态</th>
+                    <th>处理人/备注</th><th>操作</th>
+                </tr></thead>
+                <tbody id="change-table"><tr><td colspan="6" class="empty-state">加载中...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="change-diff-modal">
+    <div class="modal" style="width:min(1000px,92vw);">
+        <div class="modal-header"><h3 id="change-diff-title">配置差异</h3><button class="btn btn-sm btn-outline" data-close="change-diff-modal">✕</button></div>
+        <div class="modal-body"><pre class="config-viewer" id="change-diff-content">加载中...</pre></div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="change-review-modal">
+    <div class="modal" style="width:min(560px,92vw);">
+        <div class="modal-header"><h3>处理配置变更</h3><button class="btn btn-sm btn-outline" data-close="change-review-modal">✕</button></div>
+        <div class="modal-body">
+            <input type="hidden" id="change-review-id">
+            <div class="form-group"><label>处理状态</label><select class="form-control" id="change-review-status">
+                <option value="expected">预期变更</option><option value="unexpected">异常变更</option>
+                <option value="ignored">忽略</option><option value="pending">恢复待确认</option>
+            </select></div>
+            <div class="form-group"><label>处理备注</label><textarea class="form-control" id="change-review-note" rows="5" maxlength="1000" placeholder="例如：变更单号、实施原因、核查结论"></textarea></div>
+        </div>
+        <div class="modal-footer"><button class="btn btn-outline" data-close="change-review-modal">取消</button><button class="btn btn-primary" id="change-review-save">保存</button></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}<script src="/static/js/changes.js?v={{APP_VERSION}}"></script>{% endblock %}

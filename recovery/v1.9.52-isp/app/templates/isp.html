@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><h1>ISP 线路统计</h1><button class="btn btn-primary" id="isp-add">新增线路</button></div>
+<p>按线路网段自动匹配 IPAM：使用中计已用，预分配计预留；规划、已停用不占用。与手工记录去重合并，已用优先。刷新后重新统计，不修改 IPAM。需要 IPAM 查看权限；无权限时仅显示手工统计。同一地址落入不同线路时分别统计，不表示独占绑定。剩余可分配 = 可用总数 − 已用 − 预留。IPv4 排除网络/广播地址（/31、/32 除外）；IPv6 排除子网首地址（/127、/128 除外）。使用率不代表带宽利用率。</p>
+<div class="card" style="padding:16px">
+  <label for="isp-search">搜索运营商 / 线路编号 / 使用位置</label>
+  <input id="isp-search" maxlength="200" type="search">
+  <button class="btn" id="isp-refresh">查询 / 刷新</button>
+  <p id="isp-summary" role="status"></p>
+  <div style="overflow-x:auto"><table class="data-table"><thead><tr>
+    <th>运营商</th><th>线路编号</th><th>网段</th><th>可用总数</th><th>已用</th><th>预留</th><th>剩余可分配</th><th>使用率</th><th>使用位置 / 用途</th><th>操作</th>
+  </tr></thead><tbody id="isp-rows"></tbody></table></div>
+</div>
+<section class="card" id="isp-editor" hidden style="padding:20px;margin-top:16px">
+  <h2 id="isp-editor-title">新增线路</h2>
+  <p id="isp-linked" style="white-space:pre-wrap"></p>
+  <form id="isp-form">
+    <div class="form-group"><label for="isp-provider">运营商名称 *</label><input class="form-control" id="isp-provider" required maxlength="120"></div>
+    <div class="form-group"><label for="isp-number">线路编号 *</label><input class="form-control" id="isp-number" required maxlength="120"></div>
+    <div class="form-group"><label for="isp-networks">网段 CIDR *（每行一个，如 203.0.113.0/29；不可重叠）</label><textarea class="form-control" id="isp-networks" required rows="3" maxlength="7000"></textarea></div>
+    <div class="form-group"><label for="isp-used">已使用 IP（每行一个，不带掩码；重复自动去重）</label><textarea class="form-control" id="isp-used" rows="4" maxlength="230000"></textarea></div>
+    <div class="form-group"><label for="isp-reserved">预留 IP（例如网关，每行一个）</label><textarea class="form-control" id="isp-reserved" rows="3" maxlength="230000"></textarea></div>
+    <div class="form-group"><label for="isp-location">线路使用位置 / 用途（可编辑）</label><input class="form-control" id="isp-location" maxlength="500" placeholder="例如：上海总部 / PA 防火墙 ethernet1/1 / 互联网出口"></div>
+    <div class="form-group"><label for="isp-notes">IP 使用说明 / 备注</label><textarea class="form-control" id="isp-notes" maxlength="5000" rows="3"></textarea></div>
+    <p id="isp-error" role="alert" style="color:#b91c1c"></p>
+    <button class="btn btn-primary" id="isp-save" type="submit">保存</button>
+    <button class="btn" id="isp-cancel" type="button">取消</button>
+  </form>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/js/isp.js?v={{APP_VERSION}}"></script>{% endblock %}

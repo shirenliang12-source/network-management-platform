@@ -28,6 +28,16 @@ async function populateDeviceCatalogs(prefix, type, company) {
             old.replaceWith(select);
         };
         replace(prefix + '-type', types.device_types.map(t => [t.key, t.label]), type);
+        const typeSelect = document.getElementById(prefix + '-type');
+        if (typeSelect) {
+            const hint = document.createElement('small');
+            hint.className = 'text-muted';
+            hint.style.display = 'block';
+            typeSelect.insertAdjacentElement('afterend', hint);
+            const updateHint = () => { hint.textContent = types.device_types.find(t => t.key === typeSelect.value)?.note || '请维护该类型的连接驱动与命令。'; };
+            typeSelect.addEventListener('change', updateHint);
+            updateHint();
+        }
         replace(prefix + '-company', companies.filter(c => c.company).map(c => [c.company, c.company]), company, '未指定公司');
     } catch (e) { showToast('下拉选项加载失败：' + e.message, 'error'); }
 }

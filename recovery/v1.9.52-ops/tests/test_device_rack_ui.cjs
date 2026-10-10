@@ -1,0 +1,11 @@
+const fs = require('node:fs'), assert = require('node:assert/strict');
+const source = fs.readFileSync('app/templates/devices.html','utf8');
+const dc = fs.readFileSync('app/templates/dc.html','utf8');
+assert.match(source, /id="add-rack"/);
+assert.match(source, /id="add-u-start"/);
+assert.match(source, /id="add-u-size"/);
+assert.match(source, /id="edit-rack"/);
+assert.match(source, /rackLocationPayload\('edit'\)/);
+assert.match(source, /\/api\/devices\/rack-locations/);
+assert.match(dc, /\/api\/devices\/rack-locations/);
+console.log('PASS device form rack/U placement and data-center rack reverse view');

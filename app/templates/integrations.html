@@ -46,6 +46,9 @@
     <div class="card">
         <div class="card-header">☁️ VMware vCenter</div>
         <div class="card-body">
+            <label>连接来源（vCenter / 独立 ESXi）</label>
+            <select id="vcenter-source" class="form-control" onchange="selectVcenterSource()"><option value="vcenter">原有连接</option></select>
+            <button class="btn btn-outline" onclick="newVcenterSource()">＋ 新增连接</button>
             <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;">
                 <div class="form-group"><label>vCenter 地址</label><input id="vcenter-host" class="form-control" placeholder="vcenter.example.com"></div>
                 <div class="form-group"><label>端口</label><input id="vcenter-port" type="number" min="1" max="65535" value="443" class="form-control"></div>
@@ -80,6 +83,15 @@
     </div>
     <div class="card-body">
         <div id="inventory-summary" style="margin-bottom:12px;color:#6c757d;"></div>
+        <label>导入状态筛选
+            <select id="integration-state-filter" class="form-control" onchange="renderIntegrationInventory(integrationInventory)">
+                <option value="all">全部</option><option value="actionable">新增或变更</option>
+                <option value="update">已有变更</option><option value="new">未导入</option>
+                <option value="imported">已导入</option><option value="unchanged">无变化</option>
+                <option value="error">读取失败 / 冲突</option>
+            </select>
+        </label>
+        <small>全选和导入仅作用于当前筛选显示的虚拟机。差异请通过“预览”刷新。</small>
         <div class="table-container">
             <table class="data-table">
                 <thead><tr>

@@ -1,0 +1,14 @@
+.git
+.venv
+data
+dist*
+build*
+_smoke*
+_installer*
+.env*
+*.db
+*.sqlite*
+*.log
+**/.secret_key
+**/initial_admin_password.txt
+**/__pycache__

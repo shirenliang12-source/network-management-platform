@@ -29,6 +29,12 @@ router = APIRouter(prefix="/api/devices", tags=["devices"])
 
 
 # ---- Multi-IP helpers ----
+@router.get('/{device_id}/relations')
+def device_relations(device_id: int, request: Request, db: Session = Depends(get_db)):
+    from app.services.asset_relations import relations, request_modules
+    return relations(db, 'device', device_id, request_modules(request))
+
+
 def _normalize_ips(ips: list) -> list:
     """Deduplicate + drop blanks, preserve order."""
     seen, out = set(), []
@@ -182,6 +188,9 @@ def device_type_options(db: Session = Depends(get_db)):
     existing = {value for (value,) in db.query(Device.device_type).distinct() if value}
     existing.update({"cisco_ios_xe", "cisco_wlc", "cisco_ap"})
     rows.extend({"key": key, "label": key, "builtin": False} for key in sorted(existing - known))
+    from app.services.device_capabilities import describe_device_type
+    for row in rows:
+        row.update(describe_device_type(row['key']))
     return {"device_types": rows}
 
 

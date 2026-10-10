@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header"><h1>系统设置</h1></div>
+{% include "settings/security_users.html" %}
+{% include "settings/schedules_groups.html" %}
+{% include "settings/credentials.html" %}
+{% include "settings/directory.html" %}
+{% include "settings/system_tools.html" %}
+{% include "settings/system_info.html" %}
+{% endblock %}
+
+{% block scripts %}
+<script>window.MODULES = {{ MODULES | tojson }};</script>
+<script src="/static/js/settings.js?v={{APP_VERSION}}"></script>
+{% endblock %}

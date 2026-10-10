@@ -86,10 +86,10 @@ try {
 
     # 0a) 强杀所有残留进程（确保 exe 文件不被锁）
     Log '强杀残留 CiscoNetworkManager.exe 进程 ...'
-    taskkill /F /IM CiscoNetworkManager.exe 2>&1 | Out-Null
+    & powershell.exe -NoProfile -File (Join-Path $src 'stop_instance.ps1') -InstallDir $InstallDir
     Start-Sleep -Seconds 1
     # 也杀掉可能残留的 nssm.exe（旧的）
-    taskkill /F /IM nssm.exe 2>&1 | Out-Null
+    # The service's own NSSM stops with the service; unrelated NSSM is untouched.
     Start-Sleep -Seconds 1
 
     # 1) 复制顶层文件（此时文件已解锁）
@@ -101,7 +101,7 @@ try {
     }
     $top = @(
         'CiscoNetworkManager.exe', '使用说明.txt', 'README.txt',
-        'sample_devices.csv', '启动.bat', 'start.bat', 'nssm.exe', 'uninstall.ps1'
+        'sample_devices.csv', '启动.bat', 'start.bat', 'nssm.exe', 'uninstall.ps1', 'service_probe.ps1'
     )
     foreach ($f in $top) {
         $s = Join-Path $src $f
@@ -147,8 +147,8 @@ try {
     # 4) 注册 Windows 服务（nssm）—— 重新安装确保使用新 exe
     $nssm = Join-Path $InstallDir 'nssm.exe'
     $exe  = Join-Path $InstallDir 'CiscoNetworkManager.exe'
-    & $nssm remove $AppName confirm 2>&1 | Out-Null
     & $nssm install $AppName $exe | Out-Null
+    & $nssm set $AppName Application $exe | Out-Null
     # 设置启动参数（含 --data-dir 如果选择了自定义数据目录）
     if ($DataDir -ne $defaultDataDir) {
         $appParams = "--host $BindHost --port $Port --data-dir `"$DataDir`""
@@ -174,8 +174,8 @@ try {
     $ok = $false
     for ($i = 0; $i -lt 60; $i++) {
         try {
-            $health = Invoke-RestMethod -Uri "$Url/health" -TimeoutSec 2
-            if ($health.status -eq 'ok' -and (!$ExpectedVersion -or $health.version -eq $ExpectedVersion)) {
+            & powershell.exe -NoProfile -File (Join-Path $InstallDir 'service_probe.ps1') -Executable $exe -DataDir $DataDir -ExpectedVersion $ExpectedVersion | Out-Null
+            if ($LASTEXITCODE -eq 0) {
                 $ok = $true
                 break
             }
@@ -185,7 +185,9 @@ try {
     if (-not $ok) {
         throw "新版服务未通过健康检查，安装程序将恢复上一版本。详情请查看 $LogFile"
     }
-    Log "健康检查: OK (v$($health.version))"
+    Log "健康检查: OK (v$ExpectedVersion)"
+    $Url = (& powershell.exe -NoProfile -File (Join-Path $InstallDir 'service_probe.ps1') -Executable $exe -DataDir $DataDir -PrintUrl).Trim()
+    if ($LASTEXITCODE -ne 0) { throw '无法确定服务访问地址' }
 
     # 只有新版确认可用后才提交安装状态，避免失败升级覆盖已有配置指针。
     New-Item -Path $StateKey -Force | Out-Null

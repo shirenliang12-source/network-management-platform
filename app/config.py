@@ -86,11 +86,14 @@ def _load_or_create_secret_key() -> str:
 class Settings(BaseSettings):
     # Application
     APP_NAME: str = "Cisco 网络自动化运维平台"
-    APP_VERSION: str = "1.9.51"
+    APP_VERSION: str = "1.9.56"
     HOST: str = "0.0.0.0"
     PORT: int = 9632
     DEBUG: bool = False
     COOKIE_SECURE: bool = False
+    SSL_CERTFILE: str = ""
+    SSL_KEYFILE: str = ""
+    PG_BIN_DIR: str = ""
 
     # Database
     DATABASE_URL: str = f"sqlite:///{DATA_DIR / 'netmgr.db'}"
@@ -120,7 +123,16 @@ class Settings(BaseSettings):
         env_prefix = "NETMGR_"
 
 
-settings = Settings()
+from app.services.managed_runtime import read_runtime
+_managed_values = read_runtime(DATA_DIR)
+# Explicit service environment overrides persistent installer settings.
+settings = Settings(**{k: v for k, v in _managed_values.items() if 'NETMGR_' + k not in os.environ})
+if settings.PG_BIN_DIR:
+    os.environ['PATH'] = settings.PG_BIN_DIR + os.pathsep + os.environ.get('PATH', '')
+if settings.SSL_CERTFILE or settings.SSL_KEYFILE:
+    if not (settings.SSL_CERTFILE and settings.SSL_KEYFILE):
+        raise ValueError('HTTPS requires both NETMGR_SSL_CERTFILE and NETMGR_SSL_KEYFILE')
+    settings.COOKIE_SECURE = True
 
 # Ensure directories exist
 os.makedirs(settings.BACKUP_DIR, exist_ok=True)

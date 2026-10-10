@@ -112,7 +112,7 @@ function renderSchedules(list) {
                 <code>${escapeHtml(s.cron_expression)}</code>
                 <div style="color:#888; font-size:12px;">${escapeHtml(cronHint(s.cron_expression))}</div>
             </td>
-            <td>${s.next_run ? formatRelative(s.next_run) : (s.is_enabled ? '—' : '已停用')}</td>
+            <td>${s.next_run ? formatDateTime(s.next_run) + '（' + formatRelative(s.next_run) + '）' : (s.is_enabled ? '—' : '已停用')}</td>
             <td>${s.last_run ? formatRelative(s.last_run) : '从未'}</td>
             <td>
                 ${s.is_running

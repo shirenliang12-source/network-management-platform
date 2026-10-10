@@ -9,6 +9,7 @@
 </div>
 
 <!-- App-data backup (upgrade / iteration safety) -->
+<p class="text-muted">FTD 的 SSH 配置备份仅包含诊断 CLI / LINA 配置，不是完整 FMC/FDM 恢复备份；完整恢复请另行使用管理平台备份。</p>
 {% if request.state.user.is_superuser %}
 <div class="card" style="border-left: 4px solid #2563eb;">
     <div class="card-header">
@@ -208,15 +209,7 @@ async function loadDeviceFilter() {
 }
 
 async function viewConfig(backupId) {
-    document.getElementById('configModal').classList.add('active');
-    document.getElementById('configContent').textContent = '加载中...';
-    try {
-        const backup = await API.get(`/api/backups/${backupId}`);
-        document.getElementById('configModalTitle').textContent = `配置内容 - ${backup.device_name}`;
-        document.getElementById('configContent').textContent = backup.config_text;
-    } catch (e) {
-        document.getElementById('configContent').textContent = '加载失败: ' + e.message;
-    }
+    return showConfigPage(backupId);
 }
 
 async function runAllBackups() {

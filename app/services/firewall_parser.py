@@ -12,11 +12,13 @@ def parse_firewall_version(raw, driver):
                       'serial_number': r'^Serial Number:\s*(\S+)', 'model': r'^Hardware:\s*([^,]+)',
                       'hostname': r'^(\S+) up\s+\d', 'uptime': r'^\S+ up\s+(.+)$'},
     }
+    if driver == 'cisco_ftd':
+        patterns[driver] = dict(patterns['cisco_asa'])
     result = {}
     for field, pattern in patterns.get(driver, {}).items():
         match = re.search(pattern, raw, re.I | re.M)
         if match:
             result[field] = match.group(1).strip()
     if result:
-        result['os_type'] = {'fortinet':'FortiOS', 'paloalto_panos':'PAN-OS', 'cisco_asa':'ASA'}[driver]
+        result['os_type'] = {'fortinet':'FortiOS', 'paloalto_panos':'PAN-OS', 'cisco_asa':'ASA', 'cisco_ftd':'FTD (LINA)'}[driver]
     return result

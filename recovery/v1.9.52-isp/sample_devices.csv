@@ -1,0 +1,8 @@
+﻿name,ip_address,device_type,username,password,enable_password,port,group_name
+SW-Core-01,10.0.0.1,cisco_ios,admin,cisco123,cisco123,22,核心层
+SW-Core-02,10.0.0.2,cisco_ios,admin,cisco123,cisco123,22,核心层
+SW-Dist-01,10.0.1.1,cisco_ios_xe,admin,cisco123,cisco123,22,汇聚层
+SW-Access-01,10.0.2.1,cisco_ios,admin,cisco123,cisco123,22,接入层
+SW-Access-02,10.0.2.2,cisco_ios,admin,cisco123,cisco123,22,接入层
+WLC-01,10.0.3.1,cisco_wlc,admin,cisco123,,22,无线
+NX-Core-01,10.0.0.3,cisco_nxos,admin,cisco123,cisco123,22,核心层

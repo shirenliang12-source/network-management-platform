@@ -1,0 +1,162 @@
+{
+  "status": "reconstructed, not binary-verified",
+  "archive_sha256": "f92afbec3c02bdf803193b29db960ec4b0105bacd39937df36508ebd6fa79606",
+  "patches": [
+    {
+      "timestamp": "2026-09-15T05:48:31.351Z",
+      "call_id": "call_6PcRdyyCs59FRDan4Mb4qqef",
+      "files": [
+        "app/templates/ipam.html",
+        "tests/test_ipam_tabs_ui.cjs"
+      ],
+      "patch_sha256": "e9c820dd1b9c69351201ae1a26c51885aca130aca8264098961f78ccb748719f"
+    },
+    {
+      "timestamp": "2026-09-15T05:57:03.693Z",
+      "call_id": "call_HnJZ8LDvrR6Mtr2QwbRPaaKs",
+      "files": [
+        "app/services/backup_service.py",
+        "app/services/info_service.py",
+        "app/config.py",
+        "run.py",
+        "app/routers/backups.py",
+        "app/static/js/config_preview.js",
+        "app/templates/base.html",
+        "app/templates/backups.html",
+        "app/templates/device_detail.html"
+      ],
+      "patch_sha256": "c19abc7855ece12ea09032abda1b13835851ad26966cd96c44f77fe7ea4419ac"
+    },
+    {
+      "timestamp": "2026-09-15T05:58:16.893Z",
+      "call_id": "call_rjJSyFCRlGQQ0zwnKTB1dIIe",
+      "files": [
+        "app/templates/backups.html",
+        "app/templates/device_detail.html",
+        "tests/test_config_preview.py",
+        "docs/https-deployment.md"
+      ],
+      "patch_sha256": "48fb643df485a71152e7718647aae5d05362f80a334004f5d06b1f133fa9fdf9"
+    },
+    {
+      "timestamp": "2026-09-15T05:58:43.337Z",
+      "call_id": "call_QV9ngDbsBoFUxCRmPfNniGlJ",
+      "files": [
+        "tests/test_config_preview.py"
+      ],
+      "patch_sha256": "5145d87dd7f0bd44ea26eb111d60e977dbdafd8f6e10e49bf1cb51e2923f38f1"
+    },
+    {
+      "timestamp": "2026-09-15T06:00:02.828Z",
+      "call_id": "call_Ae16lp23phFVqPKVqHQK1ga1",
+      "files": [
+        "tests/test_https_startup.py",
+        "tests/test_ipam_dhcp_fix.py"
+      ],
+      "patch_sha256": "e58e625346f9a0306adb972c2ea7016bcb95e96a2c1ca53421e2c6b9c4d8fa8a"
+    },
+    {
+      "timestamp": "2026-09-15T06:03:54.150Z",
+      "call_id": "call_mjabz57pXW6rxm7peEeU8wWp",
+      "files": [
+        "app/static/js/app.js",
+        "app/templates/logs.html",
+        "app/scheduler/tasks.py",
+        "app/templates/schedule.html",
+        "tests/test_time_ui.cjs"
+      ],
+      "patch_sha256": "935c235d54b9b8879f551e2d80737e6a79772d3cc87d33f5652ff13fe7a5b4bf"
+    },
+    {
+      "timestamp": "2026-09-15T06:08:17.489Z",
+      "call_id": "call_KeSRJEU9FdZdHDzbi4xsuU2h",
+      "files": [
+        "app/services/server_csv.py",
+        "app/routers/assets.py",
+        "app/templates/servers.html"
+      ],
+      "patch_sha256": "c338f2907e464f41d54e40eb729b697916692b1e6df7f6edbbf5c87ea693afee"
+    },
+    {
+      "timestamp": "2026-09-15T06:09:08.737Z",
+      "call_id": "call_SkIHAmFdVmBUFHwCkYITL6FE",
+      "files": [
+        "app/templates/integrations.html",
+        "app/static/js/integrations.js",
+        "tests/test_integration_filter_ui.cjs"
+      ],
+      "patch_sha256": "84c84b77bce2d230176e20d89a29b527321e1e13079dfff3dbc7a07dd3670331"
+    },
+    {
+      "timestamp": "2026-09-15T06:10:25.412Z",
+      "call_id": "call_SEhhqyBKMp8vrYRaaStWkE5s",
+      "files": [
+        "app/services/server_csv.py",
+        "tests/test_server_csv.py"
+      ],
+      "patch_sha256": "534cb3eaa83a17dd5c1c6e4023853296d10eca4099571d8e55331831c833ec3c"
+    },
+    {
+      "timestamp": "2026-09-15T06:12:48.391Z",
+      "call_id": "call_BP2tnf9WAjhI4MwgMQYzojDI",
+      "files": [
+        "app/services/sqlite_to_postgres.py"
+      ],
+      "patch_sha256": "94b08843411ec5e07b08da97cb59722f9c94966ff6b1015d4ee60bf2fd5f576e"
+    },
+    {
+      "timestamp": "2026-09-15T06:17:44.684Z",
+      "call_id": "call_APl5QfFJAZWAHM2P7AFcRAVi",
+      "files": [
+        "tests/windows_pg_migration_smoke.py"
+      ],
+      "patch_sha256": "2adc78c8fad799ea35a4c7c5e066bdc15eccb9c7e3a34f1ba47d0ac8df41e453"
+    },
+    {
+      "timestamp": "2026-09-15T06:22:45.059Z",
+      "call_id": "call_ao61OGXGqwZVSLpajgXSNUtB",
+      "files": [
+        "app/services/integration_sources.py",
+        "app/routers/integrations.py",
+        "app/services/integration_sync_service.py"
+      ],
+      "patch_sha256": "9d4b932ba13afe6acafb94e8b48acd1afe4eae6c1744a99d4651db2e287bfe53"
+    },
+    {
+      "timestamp": "2026-09-15T06:24:42.977Z",
+      "call_id": "call_CerbN464CLU0M85gjCUQzDHx",
+      "files": [
+        "app/templates/integrations.html",
+        "app/static/js/integrations.js",
+        "app/scheduler/tasks.py"
+      ],
+      "patch_sha256": "48a9851cfb6c7bf05fdf61d95a27d2dc57435c682c46706275535809c8bf8758"
+    },
+    {
+      "timestamp": "2026-09-15T06:26:16.316Z",
+      "call_id": "call_RUsq0SYKdmk8UbYYDtcd1v4o",
+      "files": [
+        "tests/test_vcenter_sources.py"
+      ],
+      "patch_sha256": "68e3670049331265a5b446970b03418b5c744b6b986daa3595e6dd5472769e46"
+    },
+    {
+      "timestamp": "2026-09-15T06:35:33.300Z",
+      "call_id": "call_ZYflP4cReLT3Bh3nHy8tDFt6",
+      "files": [
+        "app/config.py",
+        "docs/release-1.9.52.md"
+      ],
+      "patch_sha256": "15a893a07c2432214cab6907502683d889fdfaaf242003baa039799196da0120"
+    },
+    {
+      "timestamp": "2026-09-15T06:37:30.349Z",
+      "call_id": "call_3p5goMFJWQj86SegQl2FIpP8",
+      "files": [
+        "README.md",
+        "_smoke_test.py"
+      ],
+      "patch_sha256": "cf726fd70771883085b3753854ee804388733c1c568963bc5e0b45d6948aa502"
+    }
+  ]
+}

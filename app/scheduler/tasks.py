@@ -1,7 +1,7 @@
 """Scheduler tasks using APScheduler."""
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -69,7 +69,26 @@ def _run_zabbix_sync(_device_ids, db):
 
 
 def _run_vcenter_sync(_device_ids, db):
-    return _run_integration_task("vcenter", db)
+    from app.models import SystemSetting
+    from app.services.integration_sources import provider
+    sources = []
+    for row in db.query(SystemSetting).filter(SystemSetting.key.like('integration_vcenter%')).all():
+        source = row.key.removeprefix('integration_')
+        try:
+            if provider(source) == 'vcenter': sources.append(source)
+        except ValueError:
+            continue
+    if not sources:
+        raise RuntimeError('尚未配置 vCenter 来源')
+    errors, result = [], None
+    for source in sources:
+        try:
+            result = _run_integration_task(source, db)
+        except Exception:
+            errors.append(source)
+    if errors:
+        raise RuntimeError('部分来源同步失败，请查看各来源日志：' + ', '.join(errors))
+    return result
 
 
 # task_type -> service handler(device_ids, db) -> TaskLog
@@ -250,8 +269,8 @@ def _sync_next_runs():
         for sched in db.query(ScheduleConfig).all():
             job = scheduler.get_job(f"sched_{sched.id}")
             if job is not None and job.next_run_time is not None:
-                # Strip tz info to keep stored datetime naive (consistent with last_run)
-                sched.next_run = job.next_run_time.replace(tzinfo=None)
+                # Normalize the instant before removing timezone for legacy UTC columns.
+                sched.next_run = job.next_run_time.astimezone(timezone.utc).replace(tzinfo=None)
             else:
                 sched.next_run = None
         db.commit()
